@@ -19,9 +19,11 @@ class AbstractDataset(Dataset, ABC):
 
     @staticmethod
     def _validate_type(data: ModelInput) -> ModelInput:
-        """
-        Validate if the data is a ModelInput type by enforcing its keys. The data must contain all necessary keys
+        """Validate if the data is a ModelInput type by enforcing its keys.
+
+        The data must contain all necessary keys
         defined in ModelInput. Its key set should be a superset of that of ModelInput.
+
         Args:
             data: data to examine.
 
@@ -42,10 +44,10 @@ class AbstractDataset(Dataset, ABC):
 
     @abstractmethod
     def fetch(self, index) -> ModelInput:
-        """
-        Override to fetch data from index. It's invoked in __getitem__
+        """Override to fetch data from index. It's invoked in __getitem__
+
         Args:
-            index:
+            index: whi
 
         Returns:
 
@@ -53,8 +55,8 @@ class AbstractDataset(Dataset, ABC):
         raise NotImplementedError
 
     def __getitem__(self, index) -> ModelInput:
-        """
-        Use self.fetch to obtain the data by index but always guarantee that the data is a ModelInput
+        """Use self.fetch to obtain the data by index but always guarantee that the data is a ModelInput
+
         Args:
             index: index of data (e.g., corresponding index in a list)
 

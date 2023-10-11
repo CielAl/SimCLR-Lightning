@@ -15,6 +15,7 @@ from simclr_lightning.dataset.data_class import ModelInput, ModelOutput
 class FinetuneLightning(BaseLightningModule):
     _transforms_dict: nn.ModuleDict | Dict[PHASE_STR, Callable]
     finetune_base: BaseFineTune
+    max_t: int
 
     @property
     def transforms_dict(self):
@@ -28,13 +29,30 @@ class FinetuneLightning(BaseLightningModule):
                  transforms_dict: nn.ModuleDict | Dict[PHASE_STR, Callable],
                  finetune_base: BaseFineTune,
                  freeze_weight: bool = False,
+                 max_t: int = 90,
                  betas=(0.5, 0.99),
                  weight_decay: float = 1e-4,
                  lr: Optional[float] = 1e-3,
                  batch_size: Optional[int] = 64,
                  prog_bar: bool = True,
                  next_line: bool = True):
-        super().__init__(batch_size=batch_size, lr=lr, prog_bar=prog_bar, next_line=next_line)
+        """A simple LightningModule wrapper to finetune the pre-trained SimCLR model with labels.
+
+        Args:
+            transforms_dict: A dict (dict/ModuleDict) of callables (or better, nn.Modules) for transformations of
+                input, e.g., optional augmentation of image data.
+            finetune_base: Base model to finetune
+            freeze_weight: whether to freeze the layers before classification layers, e.g., any convolutional blocks).
+            max_t: max number of steps for CosineAnnealingLR scheduler to restart.
+            betas: betas for the optimizer (adams in the current implementation)
+            weight_decay: weight decays for the optimizer (adams in the current implementation)
+            lr: learning rate
+            batch_size: batch size
+            prog_bar: whether to log results in progress bar
+            next_line: whether to print a new line after each validation epoch. This enables the default tqdm progress
+                bar to retain the results of previous epochs in previous lines.
+        """
+        super().__init__(batch_size=batch_size, lr=lr, max_t=max_t, prog_bar=prog_bar, next_line=next_line)
         self.finetune_base = finetune_base
         self._transforms_dict = transforms_dict
         self.num_classes = finetune_base.classification_head.num_classes
@@ -85,17 +103,21 @@ class FinetuneLightning(BaseLightningModule):
         img = batch['data']
         labels = batch['ground_truth'].long()
         filenames = batch['filename']
-        # b x 6
+        # batch x num_class
         logits = self(img, 'predict')
-        bbox = batch['meta']
+        meta = batch['meta']
 
         loss_to_placeholder = 0 * torch.ones_like(logits)
         filenames_np = np.asarray(filenames)
         filenames_np_to_pred = filenames_np.tolist()
 
         out = ModelOutput(loss=loss_to_placeholder, logits=logits, ground_truth=labels, filename=filenames_np_to_pred,
-                          meta=bbox)
+                          meta=meta)
         return out
+
+    def _log_on_final_batch_helper(self, phase_name: PHASE_STR):
+        self.log_meter(f"{phase_name}_auc", self.auc_metric, logger=True, sync_dist=True)
+        self.log_meter(f"{phase_name}_loss", self.loss_avg, logger=True, sync_dist=True)
 
     def _reset_meters(self):
         self.auc_metric.reset()
@@ -114,11 +136,11 @@ class FinetuneLightning(BaseLightningModule):
 
     # noinspection PyUnusedLocal
     def training_step(self, batch: ModelInput, batch_idx):
-        return self._step(batch, 'train')
+        return self._step(batch, 'fit')
 
     # noinspection PyUnusedLocal
     def validation_step(self, batch: ModelInput, batch_idx):
-        return self._step(batch, 'validation')
+        return self._step(batch, 'validate')
 
     # noinspection PyUnusedLocal
     def testing_step(self, batch: ModelInput, batch_idx):
@@ -138,6 +160,7 @@ class FinetuneLightning(BaseLightningModule):
                              num_classes: int,
                              drop_rate: Optional[float] = 0.5,
                              freeze_weight: bool = False,
+                             max_t: int = 90,
                              betas=(0.5, 0.99),
                              weight_decay: float = 1e-4,
                              lr: Optional[float] = 1e-3,

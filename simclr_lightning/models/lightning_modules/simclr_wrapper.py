@@ -41,7 +41,24 @@ class SimCLRLightning(BaseLightningModule):
                  prog_bar: bool = True,
                  next_line: bool = True
                  ):
-        super(SimCLRLightning, self).__init__(batch_size, lr, prog_bar, next_line)
+        """Wrapper of LightningModule for SimCLR training.
+
+        Args:
+            base_model: The base model. The transformation is enclosed in an `AugmentationView` and prepended to the
+                backbone of the base model. This allows the GPU-acceleration of transformation and flexibility as
+                the `augment_view` can be replaced any time (e.g., to nn.Identity in prediction)
+                as there are no learnable weights.
+            lr: learning rate
+            batch_size: batch size
+            temperature:  temperature for Info NCE loss
+            max_t: max number of steps for CosineAnnealingLR scheduler to restart.
+            betas: betas for the optimizer (adams in the current implementation)
+            weight_decay: weight decays for the optimizer (adams in the current implementation)
+            prog_bar: whether to log results in progress bar
+            next_line: whether to print a new line after each validation epoch. This enables the default tqdm progress
+                bar to retain the results of previous epochs in previous lines.
+        """
+        super(SimCLRLightning, self).__init__(batch_size, lr, max_t, prog_bar, next_line)
 
         # params
         self.temperature = temperature
@@ -98,15 +115,29 @@ class SimCLRLightning(BaseLightningModule):
         return out
 
     def training_step(self, batch: ModelInput, batch_idx):
-        out = self._step(batch, 'train')
+        out = self._step(batch, 'fit')
         self.scheduler_step()
         return out
 
     def validation_step(self, batch: ModelInput, batch_idx):
-        out = self._step(batch, 'validation')
+        out = self._step(batch, 'validate')
         return out
 
     def predict_step(self, batch: ModelInput, batch_idx: int, dataloader_idx: int = 0):
+        """In prediction, labels may not be available. Thus, loss is filled 0s as placeholders.
+
+        n_views should be set to 1 if the goal is just to embed the input into feature space.
+        Tweak the `_return_embedding` flag in self.model (AbstractBaseModel) to decide whether to get the projection
+        head output (_return_embedding=False) or the hidden feature before projection head (_return_embedding=True)
+
+        Args:
+            batch:
+            batch_idx:
+            dataloader_idx:
+
+        Returns:
+            Prediction output.
+        """
         images = batch['data']
         labels = batch['ground_truth']
         meta = batch['meta']
@@ -120,10 +151,7 @@ class SimCLRLightning(BaseLightningModule):
                           ground_truth=labels, filename=filenames_list, meta=meta)
         return out
 
-    def log_on_final_batch(self, phase_name: PHASE_STR):
-        if not self.trainer.is_last_batch:
-            return
-
+    def _log_on_final_batch_helper(self, phase_name: PHASE_STR):
         self.log_meter(f"{phase_name}_acc", self.accuracy, logger=True, sync_dist=True)
         self.log_meter(f"{phase_name}_loss", self.loss_avg, logger=True, sync_dist=True)
 

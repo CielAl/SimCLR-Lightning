@@ -30,9 +30,22 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
 
     @staticmethod
     def path_invalid(export_dir):
+        """Check if export_dir is not a str. Only as simple sanitization.
+
+        Args:
+            export_dir:
+
+        Returns:
+
+        """
         return export_dir is None or not isinstance(export_dir, str)
 
     def _init_export_dir(self):
+        """Create the export folder after validation. Raise a warning if not a valid str.
+
+        Returns:
+
+        """
         if AllGatherWriter.path_invalid(self.export_dir):
             warnings.warn(f"export_dir is not set - ignore output")
             return
@@ -41,6 +54,18 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
     def __init__(self, export_dir: Optional[str] = None, trim_size: Optional[int] = None,
                  keep_in_memory: bool = True,
                  reduce_ops: Optional[Callable] = DEFAULT_REDUCE_OP):
+        """Callbacks to gather the prediction output with multi-gpu support.
+
+        Support file exportation or retain the results in memory.
+
+        Args:
+            export_dir: Directory of output.
+            trim_size: Cut off the prediction after the defined trim_size. No cutoff if set to None.
+            keep_in_memory: Whether to retain the results in the `prediction` attribute
+            reduce_ops: what operations to reduce the output collected from each device after gathering. By default
+                use list concatenation. The ops must be a callable of reduce_ops(*args) wherein each element in args
+                is the result collected from one device.
+        """
         super().__init__(write_interval='epoch')
         self.export_dir = export_dir
         self._init_export_dir()
@@ -51,6 +76,16 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
 
     @staticmethod
     def export_data(data, export_dir: Optional[str], fname: str):
+        """Export the results to file with given fname if the export_dir is set.
+
+        Args:
+            data:
+            export_dir:
+            fname:
+
+        Returns:
+
+        """
         if AllGatherWriter.path_invalid(export_dir):
             return
         dest = os.path.join(export_dir, fname)
@@ -58,6 +93,14 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
 
     @staticmethod
     def stage_name(trainer):
+        """Name of current trainer stage in lower cases.
+
+        Args:
+            trainer:
+
+        Returns:
+
+        """
         return trainer.state.stage.name.lower()
 
     def write_on_batch_end(
@@ -70,6 +113,23 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
+        """Callbacks to override in BasePredictionWriter. Defines how to export batch-level output.
+
+        Write the batch-level output of each device. Specify the dataloader_idx and batch_idx as well as the
+        rank of device.
+
+        Args:
+            trainer:
+            pl_module:
+            prediction:
+            batch_indices:
+            batch:
+            batch_idx:
+            dataloader_idx:
+
+        Returns:
+
+        """
         stage_name = AllGatherWriter.stage_name(trainer)
         AllGatherWriter.export_data(prediction,
                                     self.export_dir, fname=f"{stage_name}_batch_{trainer.global_rank}"
@@ -77,6 +137,18 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
 
     @staticmethod
     def _not_empty_single_batch(data: Union[Dict, Sequence, torch.Tensor]):
+        """Identify whether the current batch is empty.
+
+        For tensor output, check its nelement - nonzero?.
+        For Sequence, check its length - nonzero?.
+        For Dict, recursively check all values.
+
+        Args:
+            data: data to inspect.
+
+        Returns:
+            True if nothing is empty in the data.
+        """
         if isinstance(data, torch.Tensor):
             return data.nelement() > 0
         if isinstance(data, Sequence):
@@ -87,6 +159,20 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
     @staticmethod
     def _pad_helper(prediction: torch.Tensor, strategy: Strategy,
                     group: Optional[Any] = None, sync_grads: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Pad the tensor by the max length of corresponding value across all devices.
+
+        This is mandatory as all_gather only supports tensor with same shape. Therefore if the device has tensor of
+        different shape, e.g., the last non-full batch, padding is needed.
+
+        Args:
+            prediction: tensor to pad
+            strategy: Current DDP strategy. See `Lightning Fabric`
+            group: See `all_gather`
+            sync_grads: See `all_gather`
+
+        Returns:
+            padded prediction and the corresponding list of original shapes (as tensor).
+        """
         shape_tensor = torch.tensor(prediction.shape, device=prediction.device)
 
         # if world size 1 --> will be flattened. Use atleast_2d to add the leading dimension
@@ -103,7 +189,16 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
         return pred_padded, shape_gathered  # , pad_shape, shape_max
 
     @staticmethod
-    def _data_unpad(pred_gathered, shape_gathered):
+    def _data_unpad(pred_gathered: torch.Tensor, shape_gathered: torch.Tensor):
+        """Use the original shape to retrieve the original results from padded tensor.
+
+        Args:
+            pred_gathered:
+            shape_gathered:
+
+        Returns:
+
+        """
         part_list = []
         for recv, shape in zip(pred_gathered, shape_gathered):
             part_list.append(recv[:shape[0]])
@@ -111,6 +206,17 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
 
     @staticmethod
     def _bytes_data(data: Any):
+        """Serialize arbitrary objects to bytes stream in form of Byte Tensor (uint8).
+
+        This is for convenience if the output contains python object that is not supported by torch.Tensor (e.g., str),
+        but can be pickled.
+
+        Args:
+            data: data to serialize.
+
+        Returns:
+            Corresponding Byte Tensor.
+        """
         return torch.tensor(bytearray(pickle.dumps(data)), dtype=torch.uint8, device='cuda')
 
     @staticmethod
@@ -135,7 +241,7 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
         if reduce_ops is None:
             return part_list
         assert isinstance(reduce_ops, Callable)
-        return reduce_ops(part_list)
+        return reduce_ops(*part_list)
 
     # noinspection PyUnusedLocal
     @staticmethod
@@ -152,14 +258,15 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
         mmdetection/blob/482f60fe55c364e50e4fc4b50893a25d8cc261b0/mmdet/apis/test.py#L160
 
         Args:
-            prediction:
-            global_rank:
-            strategy:
-            size:
-            group:
-            sync_grads:
+            prediction: Prediction results to collect. If not tensor, then `serialize_flag` should be set to serialize
+                pickled prediction as a stream of byte tensors.
+            global_rank: global_rank of current device.
+            strategy: strategy of trainer
+            size: trim size
+            group: see `all_gather`
+            sync_grads: see `all_gather`
         Returns:
-
+            list of batch-level outputs from each device, ordered by rank.
         """
         # , pad_shape, shape_max
         all_gather = strategy.all_gather
@@ -174,9 +281,13 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
         strategy.barrier()
         part_list = AllGatherWriter._data_unpad(pred_gathered, shape_gathered)
         part_list = AllGatherWriter.data_postprocess(part_list, serialize_flag)
-        # trim
-        ordered_results = AllGatherWriter.data_reduce(part_list, reduce_ops)
-        ordered_results = ordered_results[:size]
+
+        strategy.barrier()
+        if global_rank == 0:
+            ordered_results = AllGatherWriter.data_reduce(part_list, reduce_ops)
+            ordered_results = ordered_results[:size]
+        else:
+            ordered_results = []
         return ordered_results
 
     # @staticmethod
@@ -206,6 +317,22 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
                               reduce_ops: Optional[Callable] = None,
                               group: Optional[Any] = None, sync_grads: bool = False,
                               size: Optional[int] = None):
+        """Invoke the all_gather of specified strategy (e.g., DDP) but deal with data of various size.
+
+        Serialization as byte tensor and padding.
+
+        Args:
+            trainer:
+            pl_module:
+            data:
+            reduce_ops:
+            group:
+            sync_grads:
+            size:
+
+        Returns:
+
+        """
         group = group if group is not None else dist_group.WORLD
         data = convert_to_tensors(data, pl_module.device)
 
@@ -222,6 +349,15 @@ class AllGatherWriter(L.callbacks.BasePredictionWriter):
         return data_tensor_gathered
 
     def write_to_dict(self, key, predictions_all):
+        """write to the `prediction` attribute if _keep_in_memory is set.
+
+        Args:
+            key:
+            predictions_all:
+
+        Returns:
+
+        """
         if self._keep_in_memory:
             self.__prediction[key] = predictions_all
 

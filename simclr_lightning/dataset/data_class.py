@@ -28,9 +28,11 @@ class ModelInput(TypedDict):
 class ModelOutput(TypedDict):
     """Format the output of nn.Modules. 'loss' is mandatory for compatibility of LightningModule
 
-    Loss: output of loss function if available.
+    Loss: output of loss function if available. Mandatory for Lightning APIs.
     logits: output layer responses.
     ground_truth: corresponding true value.
+    meta: any meta data or extra information (e.g., coordinates of images)
+    filename: the uri of the data point if necessary.
     """
     loss: torch.Tensor
     logits: torch.Tensor

@@ -4,7 +4,9 @@ from torch.nn import functional as F
 
 
 class InfoNCELoss(nn.Module):
+    """functional of info nce
 
+    """
     @staticmethod
     def loss_forward(features: torch.Tensor, batch_size: int, n_views: int, temperature: float):
         # n_view * batch_size x 1
