@@ -80,3 +80,7 @@ The projection head feature of validation data are embedded via UMAP (details in
 
 An example of UMAP embedding of pretrained Resnet50-backbone features from CIFAR10 dataset is shown below:
 ![Screenshot](readme_resources/UMAP_projection_head.png)
+
+
+## Disclaimer
+Some codes are derived or inspired from https://theaisummer.com/simclr/ and https://github.com/sthalles/SimCLR.
