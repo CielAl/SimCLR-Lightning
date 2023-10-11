@@ -83,5 +83,4 @@ An example of UMAP embedding of pretrained Resnet50-backbone features from CIFAR
 
 
 ## Disclaimer
-Some codes are derived or inspired from https://theaisummer.com/simclr/, https://github.com/sthalles/SimCLR, and https://github.com/open-mmlab/
-        mmdetection/blob/482f60fe55c364e50e4fc4b50893a25d8cc261b0/mmdet/apis/test.py#L160.
+Some codes are derived or inspired from https://theaisummer.com/simclr/, https://github.com/sthalles/SimCLR, and https://github.com/open-mmlab/mmdetection/blob/482f60fe55c364e50e4fc4b50893a25d8cc261b0/mmdet/apis/test.py#L160.
