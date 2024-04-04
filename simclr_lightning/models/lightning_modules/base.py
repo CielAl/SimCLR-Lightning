@@ -3,7 +3,7 @@ import torchmetrics
 from typing import Literal
 from abc import abstractmethod
 import torch
-
+import numpy as np
 
 PHASE_TRAIN = Literal['fit']
 PHASE_VAL = Literal['validate']
@@ -51,10 +51,12 @@ class BaseLightningModule(L.LightningModule):
                                                                last_epoch=-1)
         return [optimizer], [scheduler]
 
-    def log_meter(self, name: str, metric: torchmetrics.Metric, on_step: bool = False,
+    def log_meter(self, name: str, metric: torchmetrics.Metric | torch.Tensor, on_step: bool = False,
                   on_epoch: bool = True, sync_dist: bool = True,
                   logger: bool = True):
-        value = metric.compute()
+        value = metric.compute() if isinstance(metric, torchmetrics.Metric) else metric
+        if isinstance(value, (torch.Tensor, np.ndarray)) and value.nelement() == 1:
+            value = value.item()
         self.log(name, value, on_step=on_step, on_epoch=on_epoch, prog_bar=self.prog_bar,
                  logger=logger, batch_size=self.batch_size, sync_dist=sync_dist)
         return value
@@ -111,7 +113,7 @@ class BaseLightningModule(L.LightningModule):
         Returns:
 
         """
-        if not self.trainer.is_last_batch:
+        if not self.trainer.is_last_batch:  # not (self.trainer.is_last_batch or self.trainer.testing)
             return
         self._log_on_final_batch_helper(phase_name)
 

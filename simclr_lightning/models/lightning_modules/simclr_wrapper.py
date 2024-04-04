@@ -1,6 +1,8 @@
-from typing import Tuple, Optional, Literal
+from typing import Tuple, Optional, Literal, Any
 import torch
 import torchmetrics
+from pytorch_lightning.utilities.types import STEP_OUTPUT
+
 from simclr_lightning.models.contrast_learning.loss import InfoNCELoss
 from simclr_lightning.models.lightning_modules.base import PHASE_STR, BaseLightningModule
 from simclr_lightning.models.contrast_learning.base import AbstractBaseModel
@@ -39,7 +41,8 @@ class SimCLRLightning(BaseLightningModule):
                  betas=(0.5, 0.99),
                  weight_decay: float = 0,
                  prog_bar: bool = True,
-                 next_line: bool = True
+                 next_line: bool = True,
+                 extra_val_interval: Optional[int] = None,
                  ):
         """Wrapper of LightningModule for SimCLR training.
 
@@ -82,18 +85,17 @@ class SimCLRLightning(BaseLightningModule):
                                                              num_classes=2 * self.batch_size - 1, top_k=top_k)
         # calculate epoch-level mean cross-entropy loss
         self.loss_avg = torchmetrics.MeanMetric()
-
+        self.extra_val_interval = extra_val_interval
         # misc
 
     def forward(self, x):
         return self.model(x)
 
-    def _step(self, batch: ModelInput, phase_name: PHASE_STR):
-        """Step function helper shared by training and validation steps which computes the logits and log the loss.
+    def _step_get_output(self, batch: ModelInput):
+        """Step helper shared by training and validation steps which computes the logits
 
         Args:
             batch: batch data in format of NetInput
-            phase_name: the name of current phase, i.e., train or validation, for purpose of loss logging.
 
         Returns:
             NetOutput containing loss, logits (final-layer output) and true labels.
@@ -110,7 +112,21 @@ class SimCLRLightning(BaseLightningModule):
         self.loss_avg.update(loss)
         filenames = batch['filename']
 
-        out = ModelOutput(loss=loss, logits=logits, ground_truth=labels, filename=filenames, meta=batch['meta'])
+        return ModelOutput(loss=loss, logits=logits, ground_truth=labels, filename=filenames, meta=batch['meta'])
+
+    def _step(self, batch: ModelInput, phase_name: PHASE_STR):
+        """Step function helper shared by training and validation steps which computes the logits and log the loss.
+
+        Args:
+            batch: batch data in format of NetInput
+            phase_name: the name of current phase, i.e., train or validation, for purpose of loss logging.
+
+        Returns:
+            NetOutput containing loss, logits (final-layer output) and true labels.
+        """
+        # stacked view of original and augmented images
+        out = self._step_get_output(batch)
+        # log the TorchMetric object statistics to the logger/progbar
         self.log_on_final_batch(phase_name)
         return out
 
@@ -119,9 +135,23 @@ class SimCLRLightning(BaseLightningModule):
         self.scheduler_step()
         return out
 
-    def validation_step(self, batch: ModelInput, batch_idx):
-        out = self._step(batch, 'validate')
+    def _extra_val_every_n_epochs(self, phase_name: PHASE_STR):
+        n = self.extra_val_interval
+        if self.current_epoch > self.WARM_UP_EPOCH and n is not None and self.current_epoch % n == 0:
+            self.log_on_final_batch(phase_name)
+
+    def validation_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
+        default_phase: PHASE_STR = 'validate'
+        # if dataloader_idx == 0:
+        #     out = self._step(batch, default_phase)
+        # else:  # if multiple validation as extra measurement
+        #     out = self._step_get_output(batch)
+        #     self._extra_val_every_n_epochs(default_phase)
+        out = self._step(batch, default_phase)
         return out
+
+    def test_step(self, batch: ModelInput, batch_idx):
+        return self._step_get_output(batch)
 
     def predict_step(self, batch: ModelInput, batch_idx: int, dataloader_idx: int = 0):
         """In prediction, labels may not be available. Thus, loss is filled 0s as placeholders.
@@ -163,5 +193,10 @@ class SimCLRLightning(BaseLightningModule):
         self._reset_meters()
 
     def on_validation_epoch_end(self) -> None:
+        self._reset_meters()
+        self.print_newln()
+
+    def on_test_epoch_end(self) -> None:
+        self._log_on_final_batch_helper('test')
         self._reset_meters()
         self.print_newln()

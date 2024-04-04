@@ -34,7 +34,7 @@ parser.add_argument('--out_dim', default=128, type=int,
                     help='projection head dim (default: 128)')
 parser.add_argument('--temperature', default=0.07, type=float,
                     help='softmax temperature (default: 0.07)')
-model_names = sorted(torchvision.models.resnet.__all__)
+model_names = sorted(torchvision.models.resnet.__all__) 
 parser.add_argument('--arch', default='resnet50',
                     choices=model_names,
                     help='model architecture: ' +
@@ -121,14 +121,15 @@ if __name__ == "__main__":
 
     # wrap into LightningModule
     lightning_model = SimCLRLightning(base_model, lr=opt.lr, batch_size=opt.batch_size, temperature=opt.temperature,
-                                      weight_decay=opt.weight_decay, prog_bar=True, max_t=opt.max_t)
+                                      weight_decay=opt.weight_decay, prog_bar=True, max_t=opt.max_t,
+                                     )
 
     # instantiate a csv logger, which logs the epoch or step-wise performance. In the example the logger is updated
     # each epoch
     csv_logger = CSVLogger(save_dir=export_folder, )
     # in the example the loss of validation phase is logged into the "validation_loss" entry in the LightningModule
     # Instantiate a built-in callbacl `ModelCheckpoint` to save the top-3 models with the lowest loss in all epochs.
-    checkpoint_callbacks = ModelCheckpoint(monitor='validate_loss', save_last=True, save_top_k=3)
+    checkpoint_callbacks = ModelCheckpoint(monitor='validate_loss/dataloader_idx_0', save_last=True, save_top_k=3)
 
     trainer = L.Trainer(accelerator='gpu', devices=opt.gpu_index,
                         callbacks=[checkpoint_callbacks],
