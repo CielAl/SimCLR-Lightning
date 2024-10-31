@@ -96,6 +96,10 @@ fix_seed(seed, True, cudnn_deterministic=True)
 
 
 if __name__ == "__main__":
+    # debug
+    opt.gpu_index = [0]
+    opt.num_workers = 0
+
     # file path curation
     export_folder = opt.export_folder
     data_root = opt.data_root
@@ -129,7 +133,7 @@ if __name__ == "__main__":
     csv_logger = CSVLogger(save_dir=export_folder, )
     # in the example the loss of validation phase is logged into the "validation_loss" entry in the LightningModule
     # Instantiate a built-in callbacl `ModelCheckpoint` to save the top-3 models with the lowest loss in all epochs.
-    checkpoint_callbacks = ModelCheckpoint(monitor='validate_loss/dataloader_idx_0', save_last=True, save_top_k=3)
+    checkpoint_callbacks = ModelCheckpoint(monitor='validate_loss', save_last=True, save_top_k=3)
 
     trainer = L.Trainer(accelerator='gpu', devices=opt.gpu_index,
                         callbacks=[checkpoint_callbacks],

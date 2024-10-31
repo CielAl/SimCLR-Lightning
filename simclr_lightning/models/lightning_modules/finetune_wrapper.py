@@ -115,7 +115,7 @@ class FinetuneLightning(BaseLightningModule):
                           meta=meta)
         return out
 
-    def _log_on_final_batch_helper(self, phase_name: PHASE_STR):
+    def _log_on_final_batch_helper(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
         self.log_meter(f"{phase_name}_auc", self.auc_metric, logger=True, sync_dist=True)
         self.log_meter(f"{phase_name}_loss", self.loss_avg, logger=True, sync_dist=True)
 
@@ -172,4 +172,5 @@ class FinetuneLightning(BaseLightningModule):
         finetune_base = BaseFineTune.build_default(simclr_base, num_classes=num_classes, drop_rate=drop_rate)
         return cls(transforms_dict=transforms_dict, finetune_base=finetune_base, freeze_weight=freeze_weight,
                    betas=betas, weight_decay=weight_decay,
+                   max_t=max_t,
                    lr=lr, batch_size=batch_size, prog_bar=prog_bar, next_line=next_line)

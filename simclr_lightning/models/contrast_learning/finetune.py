@@ -68,7 +68,7 @@ class BaseFineTune(nn.Module):
     def __init__(self, simclr_base: AbstractBaseModel, classification_head: ClassificationHead):
         super().__init__()
         self._simclr_base = simclr_base
-        self._simclr_base.return_embedding = False
+        self._simclr_base.reconstruct = False
         self.remove_last_projection_layer()
         self.classification_head = classification_head
 

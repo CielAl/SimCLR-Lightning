@@ -1,3 +1,5 @@
+from abc import abstractmethod
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -64,3 +66,59 @@ class InfoNCELoss(nn.Module):
 
     def forward(self, features):
         return InfoNCELoss.loss_forward(features, self.batch_size, self.n_views, self.temperature)
+
+
+class WeightedLoss(nn.Module):
+    loss_func: nn.Module
+
+    def __init__(self, loss_func: nn.Module, weight: float):
+        super().__init__()
+        self.loss_func = loss_func
+        assert weight >= 0
+        self.weight = weight
+
+    @abstractmethod
+    def loss_func_call(self, *args, **kwargs) -> torch.Tensor:
+        ...
+
+    def forward(self, *args, **kwargs) -> torch.Tensor | float:
+        if self.weight <= 0:
+            return 0
+        return self.loss_func_call (*args, **kwargs) * self.weight
+
+
+class ContrastLoss(WeightedLoss):
+
+    def __init__(self, loss_func: InfoNCELoss, weight: float):
+        assert isinstance(loss_func, InfoNCELoss)
+        super().__init__(loss_func, weight)
+        self.criterion = nn.CrossEntropyLoss()
+
+    def loss_func_call(self, logits: torch.Tensor):
+        logits, labels = self.loss_func(logits)
+        return self.criterion(logits, labels) * self.weight, (logits, labels)
+
+    def forward(self, *args, **kwargs) -> torch.Tensor | float:
+        if self.weight <= 0:
+            return 0, (0, 0)
+        loss, (logits, labels) = self.loss_func_call(*args, **kwargs)
+        return loss, (logits, labels)
+
+    @classmethod
+    def build(cls, batch_size: int, n_views: int, temperature: float, weight: float):
+        nce_loss = InfoNCELoss(batch_size, n_views, temperature)
+        return cls(nce_loss, weight)
+
+
+class ReConstLoss(WeightedLoss):
+
+    def __init__(self, loss_func: nn.Module, weight: float):
+        super().__init__(loss_func, weight)
+
+    def loss_func_call(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return self.loss_func(x, y) * self.weight
+
+    @classmethod
+    def build(cls, weight: float, beta: float = 0.005):
+        func = nn.SmoothL1Loss(beta=beta)
+        return cls(loss_func=func, weight=weight)

@@ -102,7 +102,7 @@ class BaseLightningModule(L.LightningModule):
         if self.next_line:
             print("\n")
 
-    def log_on_final_batch(self, phase_name: PHASE_STR):
+    def log_on_final_batch(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
         """Operations and measurements to log at the final batch, e.g., for epoch-level outputs.
 
         Override `_log_on_final_batch_helper` for detailed procedures.
@@ -115,10 +115,10 @@ class BaseLightningModule(L.LightningModule):
         """
         if not self.trainer.is_last_batch:  # not (self.trainer.is_last_batch or self.trainer.testing)
             return
-        self._log_on_final_batch_helper(phase_name)
+        self._log_on_final_batch_helper(phase_name, dataloader_idx)
 
     @abstractmethod
-    def _log_on_final_batch_helper(self, phase_name: PHASE_STR):
+    def _log_on_final_batch_helper(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
         """Override to implement detailed procedures in log_on_final_batch.
 
         Args:

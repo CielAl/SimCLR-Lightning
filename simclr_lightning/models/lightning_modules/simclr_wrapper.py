@@ -1,9 +1,9 @@
-from typing import Tuple, Optional, Literal, Any
+from typing import Tuple, Optional, Literal
 import torch
 import torchmetrics
-from pytorch_lightning.utilities.types import STEP_OUTPUT
+from torchvision import transforms as tvtf
+from simclr_lightning.models.contrast_learning.loss import ContrastLoss, ReConstLoss
 
-from simclr_lightning.models.contrast_learning.loss import InfoNCELoss
 from simclr_lightning.models.lightning_modules.base import PHASE_STR, BaseLightningModule
 from simclr_lightning.models.contrast_learning.base import AbstractBaseModel
 from simclr_lightning.dataset.data_class import ModelInput, ModelOutput
@@ -13,6 +13,8 @@ OPTIM_ADAM = Literal['adam']
 # todo lars optimizer
 OPTIM_LARS = Literal['lars']
 SUPPORTED_OPTIM = Literal[OPTIM_ADAM, OPTIM_LARS]
+
+random_erasing = tvtf.RandomErasing(p=0.5, scale=(0.02, 0.1))
 
 
 class SimCLRLightning(BaseLightningModule):
@@ -27,6 +29,7 @@ class SimCLRLightning(BaseLightningModule):
     prog_bar: bool
 
     WARM_UP_EPOCH: int = 10
+    contrast_weight: float
 
     @property
     def n_views(self):
@@ -37,12 +40,15 @@ class SimCLRLightning(BaseLightningModule):
                  lr: Optional[float] = 1e-3,
                  batch_size: Optional[int] = 64,
                  temperature: Optional[float] = 0.07,
+                 contrast_weight: float = 1.0,
+                 reconst_weight: float = 1.0,
                  max_t: Optional[int] = 90,  # length dl
                  betas=(0.5, 0.99),
                  weight_decay: float = 0,
                  prog_bar: bool = True,
                  next_line: bool = True,
                  extra_val_interval: Optional[int] = None,
+                 recon_beta: float = 0.005
                  ):
         """Wrapper of LightningModule for SimCLR training.
 
@@ -73,10 +79,11 @@ class SimCLRLightning(BaseLightningModule):
         self.model = base_model
 
         # contrastive loss
-        self.info_nce_loss = InfoNCELoss(self.batch_size, self.n_views, self.temperature)
+        self.contrast_loss = ContrastLoss.build(self.batch_size, self.n_views, self.temperature, contrast_weight)
 
         # cross entropy loss for classification of positive/negative pairs
         self.criterion = torch.nn.CrossEntropyLoss()
+        self.reconst_loss = ReConstLoss.build(reconst_weight * bool(self.model.reconstruct), beta=recon_beta)
 
         # meters for loss and acc
         num_classes = self.n_views * (self.batch_size - 1) + 1
@@ -85,11 +92,17 @@ class SimCLRLightning(BaseLightningModule):
                                                              num_classes=2 * self.batch_size - 1, top_k=top_k)
         # calculate epoch-level mean cross-entropy loss
         self.loss_avg = torchmetrics.MeanMetric()
+        self.class_avg = torchmetrics.MeanMetric()
+        self.reconst_avg = torchmetrics.MeanMetric()
         self.extra_val_interval = extra_val_interval
+        # assert contrast_weight >= 0
+        # self.contrast_weight = contrast_weight
+        # assert reconst_weight >= 0
+        # self.reconst_weight = reconst_weight
         # misc
 
-    def forward(self, x):
-        return self.model(x)
+    def forward(self, x, augment: bool):
+        return self.model(x, augment=augment)
 
     def _step_get_output(self, batch: ModelInput):
         """Step helper shared by training and validation steps which computes the logits
@@ -102,17 +115,37 @@ class SimCLRLightning(BaseLightningModule):
         """
         # stacked view of original and augmented images
         images = batch['data']
+        # explicitly do augmentation outside, and use masking upon augmentation output as the model input
+        augment_images = self.model.augment_view(images).clip(0, 1)
 
-        # obtain the projection
-        logits = self(images)
-        logits, labels = self.info_nce_loss(logits)
+        masked_images = random_erasing(augment_images)
 
-        loss = self.criterion(logits, labels)
-        self.accuracy.update(logits, labels)
+        # recon_batch_size = batch['data'].shape[0]  # // self.n_views
+
+        # already augmented beforehand
+        logits = self(masked_images, augment=False)  # self(images)
+        # contrastive learning
+
+        loss_contrast, (logits, labels) = self.contrast_loss(logits)
+
+        is_valid_class_loss = isinstance(logits, torch.Tensor) and isinstance(labels, torch.Tensor)
+        if is_valid_class_loss and self.contrast_loss.weight != 0:
+            self.accuracy.update(logits, labels)
+            self.class_avg.update(loss_contrast / self.contrast_loss.weight)
+
+        # recon
+        real_img = self.model.aug_out  # [:, :recon_batch_size, ...]  # self.model.aug_out  #
+        reconst_out = self.model.reconst_out  # [:, :recon_batch_size, ...]
+        loss_recon = self.reconst_loss(real_img, reconst_out)
+        self.reconst_avg.update(loss_recon / self.reconst_loss.weight)
+
+        # sum loss
+        loss = loss_contrast + loss_recon
         self.loss_avg.update(loss)
         filenames = batch['filename']
 
-        return ModelOutput(loss=loss, logits=logits, ground_truth=labels, filename=filenames, meta=batch['meta'])
+        return ModelOutput(loss=loss, logits=self.model.flat_out,
+                           ground_truth=real_img, filename=filenames, meta=reconst_out)
 
     def _step(self, batch: ModelInput, phase_name: PHASE_STR):
         """Step function helper shared by training and validation steps which computes the logits and log the loss.
@@ -181,13 +214,32 @@ class SimCLRLightning(BaseLightningModule):
                           ground_truth=labels, filename=filenames_list, meta=meta)
         return out
 
-    def _log_on_final_batch_helper(self, phase_name: PHASE_STR):
+    def _log_on_final_batch_helper(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
         self.log_meter(f"{phase_name}_acc", self.accuracy, logger=True, sync_dist=True)
         self.log_meter(f"{phase_name}_loss", self.loss_avg, logger=True, sync_dist=True)
+        self.log_meter(f"{phase_name}_class", self.class_avg, logger=True, sync_dist=True)
+        self.log_meter(f"{phase_name}_reconst", self.reconst_avg, logger=True, sync_dist=True)
+        # import matplotlib.pyplot as plt
+        # import numpy as np
+        # def simple_minmax(arr: np.ndarray):
+        #     arr_min = arr.min()
+        #     arr_max = arr.max()
+        #     return 255 * (arr - arr_min) / (arr_max - arr_min)
+        # debug_recon = simple_minmax(self.model.reconst_out.detach().cpu()[0].permute(1, 2, 0).numpy().astype(np.float32))
+        # debug_aug = simple_minmax(self.model.aug_out.detach().cpu()[0].permute(1, 2, 0).numpy().astype(np.float32))
+        #
+        # plt.imshow(debug_recon)
+        # plt.title('debug_recon')
+        # plt.show()
+        # plt.imshow(debug_aug)
+        # plt.title('debug_aug')
+        # plt.show()
 
     def _reset_meters(self):
         self.accuracy.reset()
         self.loss_avg.reset()
+        self.class_avg.reset()
+        self.reconst_avg.reset()
 
     def on_train_epoch_end(self) -> None:
         self._reset_meters()
