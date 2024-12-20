@@ -1,6 +1,6 @@
 import pytorch_lightning as L
 import torchmetrics
-from typing import Literal
+from typing import Literal, Callable
 from abc import abstractmethod
 import torch
 import numpy as np
@@ -21,8 +21,9 @@ class BaseLightningModule(L.LightningModule):
     # whether print new line after each epoch
     next_line: bool
     max_t: int
+    optim_func: Callable
 
-    def configure_optimizers(self):
+    def param_groups(self, module: torch.nn.Module, weight_decay: float):
         """Set up the optimizer and lr scheduler - adapted from https://theaisummer.com/simclr/
 
 
@@ -36,20 +37,36 @@ class BaseLightningModule(L.LightningModule):
 
         param_groups = [
             {
-                'params': [p for name, p in self.named_parameters() if not exclude_from_wd_and_adaptation(name)],
-                'weight_decay': self.weight_decay,
+                'params': [p for name, p in module.named_parameters() if not exclude_from_wd_and_adaptation(name)],
+                'weight_decay': weight_decay,
                 'layer_adaptation': True,
             },
             {
-                'params': [p for name, p in self.named_parameters() if exclude_from_wd_and_adaptation(name)],
+                'params': [p for name, p in module.named_parameters() if exclude_from_wd_and_adaptation(name)],
                 'weight_decay': 0.,
                 'layer_adaptation': False,
             },
         ]
-        optimizer = torch.optim.Adam(param_groups, lr=self.lr, betas=self.betas, weight_decay=self.weight_decay)
+        return param_groups
+
+    def configure_optimizers_helper(self, optim_func: Callable):
+        """Set up the optimizer and lr scheduler - adapted from https://theaisummer.com/simclr/
+
+
+        Returns:
+            See LightningModule for more detail. Usually it returns a single optimizer or
+            Tuple[List[optimizer], List[scheduler]]/
+        """
+
+        params_groups = self.param_groups(self, self.weight_decay)
+        optimizer = optim_func(params_groups, lr=self.lr, betas=self.betas, weight_decay=self.weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.max_t, eta_min=0,
                                                                last_epoch=-1)
+
         return [optimizer], [scheduler]
+
+    def configure_optimizers(self):
+        return self.configure_optimizers_helper(self.optim_func)
 
     def log_meter(self, name: str, metric: torchmetrics.Metric | torch.Tensor, on_step: bool = False,
                   on_epoch: bool = True, sync_dist: bool = True,
@@ -68,7 +85,9 @@ class BaseLightningModule(L.LightningModule):
         if self.trainer.is_last_batch and self.trainer.current_epoch >= self.WARM_UP_EPOCH:
             sch.step()
 
-    def __init__(self, batch_size: int, lr: float, max_t: int, prog_bar: bool, next_line: bool):
+    def __init__(self, batch_size: int, lr: float, max_t: int, prog_bar: bool, next_line: bool,
+                 optim_func: Callable = torch.optim.Adam,
+                 ):
         """
 
         Args:
@@ -85,6 +104,7 @@ class BaseLightningModule(L.LightningModule):
         self.prog_bar = prog_bar
         self.next_line = next_line
         self.max_t = max_t
+        self.optim_func = optim_func
 
     def _reset_meters(self, *args, **kwargs):
         """reset all torchmetrics meters

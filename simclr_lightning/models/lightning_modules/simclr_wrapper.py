@@ -12,9 +12,20 @@ from simclr_lightning.dataset.data_class import ModelInput, ModelOutput
 OPTIM_ADAM = Literal['adam']
 # todo lars optimizer
 OPTIM_LARS = Literal['lars']
-SUPPORTED_OPTIM = Literal[OPTIM_ADAM, OPTIM_LARS]
+OPTIM_ADAMW = Literal['adamw']
+SUPPORTED_OPTIM = Literal[OPTIM_ADAM, OPTIM_ADAMW]
 
-random_erasing = tvtf.RandomErasing(p=0.5, scale=(0.02, 0.1))
+random_erasing = tvtf.RandomErasing(p=0.0, scale=(0.02, 0.1))
+
+
+def _get_optim(name: SUPPORTED_OPTIM):
+    match name:
+        case 'adam':
+            return torch.optim.Adam
+        case 'adamw':
+            return torch.optim.AdamW
+        case _:
+            raise NotImplementedError
 
 
 class SimCLRLightning(BaseLightningModule):
@@ -28,8 +39,9 @@ class SimCLRLightning(BaseLightningModule):
     temperature: float
     prog_bar: bool
 
-    WARM_UP_EPOCH: int = 10
     contrast_weight: float
+
+    image_channels: int
 
     @property
     def n_views(self):
@@ -48,7 +60,9 @@ class SimCLRLightning(BaseLightningModule):
                  prog_bar: bool = True,
                  next_line: bool = True,
                  extra_val_interval: Optional[int] = None,
-                 recon_beta: float = 0.005
+                 recon_beta: float = 0.005,
+                 image_channels: int = 3,
+                 optim_name: SUPPORTED_OPTIM = 'adam'
                  ):
         """Wrapper of LightningModule for SimCLR training.
 
@@ -67,7 +81,9 @@ class SimCLRLightning(BaseLightningModule):
             next_line: whether to print a new line after each validation epoch. This enables the default tqdm progress
                 bar to retain the results of previous epochs in previous lines.
         """
-        super(SimCLRLightning, self).__init__(batch_size, lr, max_t, prog_bar, next_line)
+        optim_func = _get_optim(optim_name)
+        super(SimCLRLightning, self).__init__(batch_size, lr, max_t, prog_bar, next_line,
+                                              optim_func=optim_func)
 
         # params
         self.temperature = temperature
@@ -91,15 +107,20 @@ class SimCLRLightning(BaseLightningModule):
         self.accuracy = torchmetrics.classification.Accuracy(task="multiclass",
                                                              num_classes=2 * self.batch_size - 1, top_k=top_k)
         # calculate epoch-level mean cross-entropy loss
-        self.loss_avg = torchmetrics.MeanMetric()
-        self.class_avg = torchmetrics.MeanMetric()
-        self.reconst_avg = torchmetrics.MeanMetric()
+        self.loss_avg = torchmetrics.MeanMetric(nan_strategy='ignore')
+        self.class_avg = torchmetrics.MeanMetric(nan_strategy='ignore')
+        self.reconst_avg = torchmetrics.MeanMetric(nan_strategy='ignore')
+        self.psnr_meter = torchmetrics.image.PeakSignalNoiseRatio(data_range=(0., 1.))
+
         self.extra_val_interval = extra_val_interval
+
+        self.image_channels = image_channels
         # assert contrast_weight >= 0
         # self.contrast_weight = contrast_weight
         # assert reconst_weight >= 0
         # self.reconst_weight = reconst_weight
         # misc
+        self.separate_optimizer = False
 
     def forward(self, x, augment: bool):
         return self.model(x, augment=augment)
@@ -114,9 +135,9 @@ class SimCLRLightning(BaseLightningModule):
             NetOutput containing loss, logits (final-layer output) and true labels.
         """
         # stacked view of original and augmented images
-        images = batch['data']
+        images = batch['data'][:, :self.image_channels, ...]
         # explicitly do augmentation outside, and use masking upon augmentation output as the model input
-        augment_images = self.model.augment_view(images).clip(0, 1)
+        augment_images = self.model.augment_view(images).clamp(0, 1)
 
         masked_images = random_erasing(augment_images)
 
@@ -134,13 +155,22 @@ class SimCLRLightning(BaseLightningModule):
             self.class_avg.update(loss_contrast / self.contrast_loss.weight)
 
         # recon
-        real_img = self.model.aug_out  # [:, :recon_batch_size, ...]  # self.model.aug_out  #
-        reconst_out = self.model.reconst_out  # [:, :recon_batch_size, ...]
-        loss_recon = self.reconst_loss(real_img, reconst_out)
-        self.reconst_avg.update(loss_recon / self.reconst_loss.weight)
-
+        #   # [:, :recon_batch_size, ...]  # self.model.aug_out  #
+        real_img = self.model.aug_out[:, :self.image_channels, ...]
+        if self.reconst_loss.weight > 0:
+            reconst_out = self.model.reconst_out[:, :self.image_channels, ...]
+            loss_recon = self.reconst_loss(real_img, reconst_out)
+            self.reconst_avg.update(loss_recon / self.reconst_loss.weight)
+            self.psnr_meter.update(reconst_out, real_img)
+        else:
+            loss_recon = 0.
+            reconst_out = torch.zeros_like(real_img, device=real_img.device)
         # sum loss
         loss = loss_contrast + loss_recon
+
+        # if torch.isnan(loss).any():
+        #     breakpoint()
+
         self.loss_avg.update(loss)
         filenames = batch['filename']
 
@@ -168,19 +198,21 @@ class SimCLRLightning(BaseLightningModule):
         self.scheduler_step()
         return out
 
-    def _extra_val_every_n_epochs(self, phase_name: PHASE_STR):
+    def _extra_val_every_n_epochs(self, batch: ModelInput, phase_name: PHASE_STR):
         n = self.extra_val_interval
-        if self.current_epoch > self.WARM_UP_EPOCH and n is not None and self.current_epoch % n == 0:
-            self.log_on_final_batch(phase_name)
+        if n is None or self.current_epoch % n != 0:
+            return None
+        out = self._step(batch, phase_name)
+        return out
 
     def validation_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
         default_phase: PHASE_STR = 'validate'
-        # if dataloader_idx == 0:
-        #     out = self._step(batch, default_phase)
-        # else:  # if multiple validation as extra measurement
-        #     out = self._step_get_output(batch)
-        #     self._extra_val_every_n_epochs(default_phase)
-        out = self._step(batch, default_phase)
+        if dataloader_idx == 0:
+            out = self._step(batch, default_phase)
+        else:  # if multiple validation as extra measurement
+            # out = self._step_get_output(batch)
+            out = self._extra_val_every_n_epochs(batch, default_phase)
+        # out = self._step(batch, default_phase)
         return out
 
     def test_step(self, batch: ModelInput, batch_idx):
@@ -219,27 +251,14 @@ class SimCLRLightning(BaseLightningModule):
         self.log_meter(f"{phase_name}_loss", self.loss_avg, logger=True, sync_dist=True)
         self.log_meter(f"{phase_name}_class", self.class_avg, logger=True, sync_dist=True)
         self.log_meter(f"{phase_name}_reconst", self.reconst_avg, logger=True, sync_dist=True)
-        # import matplotlib.pyplot as plt
-        # import numpy as np
-        # def simple_minmax(arr: np.ndarray):
-        #     arr_min = arr.min()
-        #     arr_max = arr.max()
-        #     return 255 * (arr - arr_min) / (arr_max - arr_min)
-        # debug_recon = simple_minmax(self.model.reconst_out.detach().cpu()[0].permute(1, 2, 0).numpy().astype(np.float32))
-        # debug_aug = simple_minmax(self.model.aug_out.detach().cpu()[0].permute(1, 2, 0).numpy().astype(np.float32))
-        #
-        # plt.imshow(debug_recon)
-        # plt.title('debug_recon')
-        # plt.show()
-        # plt.imshow(debug_aug)
-        # plt.title('debug_aug')
-        # plt.show()
+        self.log_meter(f"{phase_name}_psnr", self.psnr_meter, logger=True, sync_dist=True)
 
     def _reset_meters(self):
         self.accuracy.reset()
         self.loss_avg.reset()
         self.class_avg.reset()
         self.reconst_avg.reset()
+        self.psnr_meter.reset()
 
     def on_train_epoch_end(self) -> None:
         self._reset_meters()
@@ -252,3 +271,22 @@ class SimCLRLightning(BaseLightningModule):
         self._log_on_final_batch_helper('test')
         self._reset_meters()
         self.print_newln()
+
+    def configure_optimizers(self):
+        if not self.separate_optimizer:
+            return super().configure_optimizers()
+        raise NotImplementedError("manual optimization is not implemented")
+        # params_base = self.param_groups(self.model.backbone, self.weight_decay)
+        # params_proj = self.param_groups(self.model.projection_head, self.weight_decay)
+        # params_ssl = params_base + params_proj
+        #
+        # params_recon = self.param_groups(self.model.decoder, self.weight_decay)
+        #
+        # optimizer_ssl = self.optim_func(params_ssl, lr=self.lr, betas=self.betas, weight_decay=self.weight_decay)
+        # optimizer_recon = self.optim_func(params_recon, lr=self.lr, betas=self.betas, weight_decay=self.weight_decay)
+        #
+        # scheduler_ssl = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_ssl, T_max=self.max_t, eta_min=0,
+        #                                                            last_epoch=-1)
+        # scheduler_recon = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_recon, T_max=self.max_t, eta_min=0,
+        #                                                              last_epoch=-1)
+        # return [optimizer_ssl, optimizer_recon], [scheduler_ssl, scheduler_recon]
