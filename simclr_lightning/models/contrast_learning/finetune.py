@@ -65,11 +65,15 @@ class BaseFineTune(nn.Module):
     def remove_last_projection_layer(self):
         self._simclr_base.projection_head[-1] = nn.Identity()
 
+    def remove_decoder(self):
+        self._simclr_base.decoder = nn.Identity()
+
     def __init__(self, simclr_base: AbstractBaseModel, classification_head: ClassificationHead):
         super().__init__()
         self._simclr_base = simclr_base
         self._simclr_base.reconstruct = False
         self.remove_last_projection_layer()
+        self.remove_decoder()
         self.classification_head = classification_head
 
     def load_base_model_state(self, state_dict: Dict, strict: bool):

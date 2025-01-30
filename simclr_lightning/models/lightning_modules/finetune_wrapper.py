@@ -16,6 +16,7 @@ class FinetuneLightning(BaseLightningModule):
     _transforms_dict: nn.ModuleDict | Dict[PHASE_STR, Callable]
     finetune_base: BaseFineTune
     max_t: int
+    loss_func: Callable
 
     @property
     def transforms_dict(self):
@@ -149,8 +150,11 @@ class FinetuneLightning(BaseLightningModule):
     def load_base_state(self, state_dict):
         self.finetune_base.load_state_dict(state_dict)
 
-    def freeze_pretrained_model(self, freeze_flag: bool):
-        for params in self.finetune_base.parameters():
+    def freeze_pretrained_model(self, freeze_flag: Optional[bool]):
+        if freeze_flag is None:
+            print("freeze_flag is not set. quit freezing/unfreezing")
+            return
+        for params in self.finetune_base.simclr_base.backbone.parameters():
             params.requires_grad_(not freeze_flag)
 
     @classmethod
@@ -166,11 +170,15 @@ class FinetuneLightning(BaseLightningModule):
                              lr: Optional[float] = 1e-3,
                              batch_size: Optional[int] = 64,
                              prog_bar: bool = True,
-                             next_line: bool = True
+                             next_line: bool = True,
+                             loss_func: Optional[Callable] = None,
                              ):
         simclr_base = simclr_lightning.model
         finetune_base = BaseFineTune.build_default(simclr_base, num_classes=num_classes, drop_rate=drop_rate)
-        return cls(transforms_dict=transforms_dict, finetune_base=finetune_base, freeze_weight=freeze_weight,
-                   betas=betas, weight_decay=weight_decay,
-                   max_t=max_t,
-                   lr=lr, batch_size=batch_size, prog_bar=prog_bar, next_line=next_line)
+        result = cls(transforms_dict=transforms_dict, finetune_base=finetune_base, freeze_weight=freeze_weight,
+                     betas=betas, weight_decay=weight_decay,
+                     max_t=max_t,
+                     lr=lr, batch_size=batch_size, prog_bar=prog_bar, next_line=next_line)
+        if loss_func is not None:
+            result.loss_func = loss_func
+        return result
