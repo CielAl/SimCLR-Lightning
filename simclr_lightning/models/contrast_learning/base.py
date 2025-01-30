@@ -179,6 +179,7 @@ class BaseModelCore(nn.Module):
         flattened_feat = self.inference(transformed_input)
         project_feat = self.projection_head(flattened_feat)
         if self.return_recon:
+            assert self.reconstruct
             return self.reconst_out
         return project_feat
 
