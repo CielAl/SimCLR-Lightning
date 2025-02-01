@@ -144,7 +144,7 @@ class FinetuneLightning(BaseLightningModule):
         return self._step(batch, 'validate')
 
     # noinspection PyUnusedLocal
-    def testing_step(self, batch: ModelInput, batch_idx):
+    def test_step(self, batch: ModelInput, batch_idx):
         return self._step(batch, 'test')
 
     def load_base_state(self, state_dict):
