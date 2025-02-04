@@ -255,15 +255,20 @@ class SimCLRLightning(BaseLightningModule):
 
     def log_all_metrics(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
         self.log(f"{phase_name}_acc", self.accuracy, batch_size=self.batch_size,
-                 prog_bar=self.prog_bar, logger=True, sync_dist=True)
+                 prog_bar=self.prog_bar, logger=True, sync_dist=True, on_epoch=True,
+                 on_step=False)
         self.log(f"{phase_name}_loss", self.loss_avg, batch_size=self.batch_size,
-                 prog_bar=self.prog_bar, logger=True, sync_dist=True)
+                 prog_bar=self.prog_bar, logger=True, sync_dist=True, on_epoch=True,
+                 on_step=False)
         self.log(f"{phase_name}_class", self.class_avg, batch_size=self.batch_size,
-                 prog_bar=self.prog_bar, logger=True, sync_dist=True)
+                 prog_bar=self.prog_bar, logger=True, sync_dist=True, on_epoch=True,
+                 on_step=False)
         self.log(f"{phase_name}_reconst", self.reconst_avg, batch_size=self.batch_size,
-                 prog_bar=self.prog_bar, logger=True, sync_dist=True)
+                 prog_bar=self.prog_bar, logger=True, sync_dist=True, on_epoch=True,
+                 on_step=False)
         self.log(f"{phase_name}_psnr", self.psnr_meter, batch_size=self.batch_size,
-                 prog_bar=self.prog_bar, logger=True, sync_dist=True)
+                 prog_bar=self.prog_bar, logger=True, sync_dist=True, on_epoch=True,
+                 on_step=False)
 
     def _log_on_final_batch_helper(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
         # self._log_meters(phase_name, dataloader_idx)

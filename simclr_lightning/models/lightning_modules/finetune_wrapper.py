@@ -127,10 +127,12 @@ class FinetuneLightning(BaseLightningModule):
     def log_all_metrics(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
         self.log(f"{phase_name}_auc", self.auc_metric,
                  batch_size=self.batch_size, prog_bar=self.prog_bar,
-                 logger=True, sync_dist=True)
+                 logger=True, sync_dist=True,
+                 on_epoch=True, on_step=False)
         self.log(f"{phase_name}_loss", self.loss_avg,
                  batch_size=self.batch_size, prog_bar=self.prog_bar,
-                 logger=True, sync_dist=True)
+                 logger=True, sync_dist=True,
+                 on_epoch=True, on_step=False)
 
     def _reset_on_first_batch(self, batch_idx: int):
         if batch_idx == 0:
@@ -150,15 +152,6 @@ class FinetuneLightning(BaseLightningModule):
 
     def on_test_epoch_end(self) -> None:
         self._reset_meters()
-
-    # def on_train_epoch_start(self) -> None:
-    #     self._reset_meters()
-    #
-    # def on_validation_epoch_start(self) -> None:
-    #     self._reset_meters()
-    #
-    # def on_test_epoch_start(self) -> None:
-    #     self._reset_meters()
 
     # noinspection PyUnusedLocal
     def training_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
