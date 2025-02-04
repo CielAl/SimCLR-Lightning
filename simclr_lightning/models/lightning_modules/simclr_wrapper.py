@@ -196,7 +196,7 @@ class SimCLRLightning(BaseLightningModule):
         out = self._step_get_output(batch)
         # log the TorchMetric object statistics to the logger/progbar
         # self.log_on_final_batch(phase_name, dataloader_idx)
-        self._log_meters(phase_name, dataloader_idx)
+        self.log_all_metrics(phase_name, dataloader_idx)
         return out
 
     def training_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
@@ -253,7 +253,7 @@ class SimCLRLightning(BaseLightningModule):
                           ground_truth=labels, filename=filenames_list, meta=meta)
         return out
 
-    def _log_meters(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
+    def log_all_metrics(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
         self.log(f"{phase_name}_acc", self.accuracy, batch_size=self.batch_size,
                  prog_bar=self.prog_bar, logger=True, sync_dist=True)
         self.log(f"{phase_name}_loss", self.loss_avg, batch_size=self.batch_size,
@@ -285,7 +285,7 @@ class SimCLRLightning(BaseLightningModule):
 
     def on_test_epoch_end(self) -> None:
         # self._log_on_final_batch_helper('test')
-        self._log_meters('test')
+        self.log_all_metrics('test')
         self._reset_meters()
         self.print_newln()
 

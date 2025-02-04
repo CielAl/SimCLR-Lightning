@@ -99,7 +99,7 @@ class FinetuneLightning(BaseLightningModule):
         self.conf_mat.update(logits, labels)
         out = ModelOutput(loss=loss, logits=logits, ground_truth=labels, filename=filenames, meta=batch['meta'])
         # self.log_on_final_batch(phase_name)
-        self._log_meters(phase_name, dataloader_idx)
+        self.log_all_metrics(phase_name, dataloader_idx)
         return out
 
     # noinspection PyUnusedLocal
@@ -124,7 +124,7 @@ class FinetuneLightning(BaseLightningModule):
         # self.log_meter(f"{phase_name}_loss", self.loss_avg, logger=True, sync_dist=True)
         ...
 
-    def _log_meters(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
+    def log_all_metrics(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
         self.log(f"{phase_name}_auc", self.auc_metric,
                  batch_size=self.batch_size, prog_bar=self.prog_bar,
                  logger=True, sync_dist=True)

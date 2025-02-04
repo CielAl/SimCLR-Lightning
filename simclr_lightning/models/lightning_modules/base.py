@@ -123,7 +123,7 @@ class BaseLightningModule(L.LightningModule):
             print("\n")
 
     @abstractmethod
-    def _log_meters(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
+    def log_all_metrics(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
         return NotImplemented
 
     def log_on_final_batch(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
