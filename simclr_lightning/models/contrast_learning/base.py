@@ -16,17 +16,21 @@ class BaseModelCore(nn.Module):
     flattener: nn.Module
     projection_head: nn.Sequential
     decoder: nn.Module
+    dec_shortcut: nn.Module
 
     _n_views: int
     _hidden_dim: int
 
     _reconstruct: bool
+    add_shortcut: bool
+    return_recon: bool
 
     _aug_hook: HookSimple
     _enc_hook: HookSimple
     _proj_hook: HookSimple
     _dec_hook: HookSimple
     _flatten_hook: HookSimple
+    _dec_shortcut_hook: HookSimple
 
     @property
     def reconstruct(self) -> bool:
@@ -50,6 +54,13 @@ class BaseModelCore(nn.Module):
             return module
         return nn.Sequential(module)
 
+    @classmethod
+    def default_identity(cls, module: Optional[nn.Module]):
+        if module is None:
+            return nn.Identity()
+        assert isinstance(module, nn.Module)
+        return module
+
     def __init__(self,
                  augment_view: AugmentationView,
                  backbone: nn.Module,
@@ -58,7 +69,10 @@ class BaseModelCore(nn.Module):
                  hidden_dim: int,
                  reconstruct: bool = False,
                  decoder: Optional[nn.Module] = None,
-                 return_recon: bool = False,):
+                 return_recon: bool = False,
+                 dec_shortcut: Optional[nn.Module] = None,
+                 add_shortcut: bool = False,
+                 ):
         super().__init__()
 
         # self.augment_view = augment_view
@@ -74,11 +88,18 @@ class BaseModelCore(nn.Module):
         self.update_projection_head(BaseModelCore.to_sequential(projection))
         self._reconstruct = reconstruct
 
-        decoder = nn.Identity() if decoder is None else decoder
+        decoder = self.__class__.default_identity(decoder)
+        # decoder =nn.Identity() if decoder is None else decoder
         self.update_decoder(decoder)
+
+        dec_shortcut = self.__class__.default_identity(dec_shortcut)
+        # dec_shortcut = nn.Identity() if dec_shortcut is None else dec_shortcut
+        self.update_dec_shortcut(dec_shortcut)
 
         self._hidden_dim = hidden_dim
         self.return_recon = return_recon
+
+        self.add_shortcut = add_shortcut
 
         # self._aug_hook = register_output_hook(self.augment_view)
         # self._enc_hook = register_output_hook(self.backbone)
@@ -115,6 +136,9 @@ class BaseModelCore(nn.Module):
         # self._dec_hook = register_output_hook(self.__decoder)
         self.set_module_hook(new_decoder, 'decoder', '_dec_hook')
 
+    def update_dec_shortcut(self, new_dec_shortcut: nn.Module):
+        self.set_module_hook(new_dec_shortcut, 'dec_shortcut', '_dec_shortcut_hook')
+
     @property
     def flatten_hook(self):
         return self._flatten_hook
@@ -134,6 +158,10 @@ class BaseModelCore(nn.Module):
     @property
     def dec_hook(self):
         return self._dec_hook
+
+    @property
+    def dec_shortcut_hook(self):
+        return self._dec_shortcut_hook
 
     @property
     def aug_out(self):
@@ -158,12 +186,18 @@ class BaseModelCore(nn.Module):
     def augmentation(self, x: torch.Tensor):
         return self.augment_view(x)
 
+    def reconstruct_path(self, x: torch.Tensor, embedding_feat: torch.Tensor):
+        if not self.reconstruct:
+            # aux. stored in the hook
+            return
+        if self.add_shortcut:
+            embedding_feat = embedding_feat + self.dec_shortcut(x)
+        self.decoder(embedding_feat)
+
     def inference(self, x: torch.Tensor):
         embedding_feat = self.backbone(x)
         flattened_feat = self.flattener(embedding_feat)
-        if self.reconstruct:
-            # aux. stored in the hook
-            self.decoder(embedding_feat)
+        self.reconstruct_path(x, embedding_feat)
         return flattened_feat
 
     def output_prediction(self, feat: torch.Tensor):
