@@ -170,8 +170,7 @@ class SimCLRLightning(BaseLightningModule):
 
         # if torch.isnan(loss).any():
         #     breakpoint()
-        loss = torch.Tensor(loss.detach())
-        self.loss_avg.update(loss)
+        self.loss_avg.update(torch.Tensor(loss.detach()))
         filenames = batch['filename']
 
         return ModelOutput(loss=loss, logits=self.model.flat_out,
