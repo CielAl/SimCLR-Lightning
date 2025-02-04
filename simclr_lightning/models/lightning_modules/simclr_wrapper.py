@@ -151,7 +151,7 @@ class SimCLRLightning(BaseLightningModule):
 
         is_valid_class_loss = isinstance(logits, torch.Tensor) and isinstance(labels, torch.Tensor)
         if is_valid_class_loss and self.contrast_loss.weight != 0:
-            self.accuracy.update(logits, labels)
+            self.accuracy.update(logits.cpu(), labels.cpu())
             self.class_avg.update(loss_contrast / self.contrast_loss.weight)
 
         # recon
@@ -171,7 +171,7 @@ class SimCLRLightning(BaseLightningModule):
         # if torch.isnan(loss).any():
         #     breakpoint()
 
-        self.loss_avg.update(loss)
+        self.loss_avg.update(loss.detach().cpu())
         filenames = batch['filename']
 
         return ModelOutput(loss=loss, logits=self.model.flat_out,
