@@ -266,7 +266,8 @@ class SimCLRLightning(BaseLightningModule):
                  prog_bar=self.prog_bar, logger=True, sync_dist=True)
 
     def _log_on_final_batch_helper(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
-        self._log_meters(phase_name, dataloader_idx)
+        # self._log_meters(phase_name, dataloader_idx)
+        ...
 
     def _reset_meters(self):
         self.accuracy.reset()
@@ -283,7 +284,8 @@ class SimCLRLightning(BaseLightningModule):
         self.print_newln()
 
     def on_test_epoch_end(self) -> None:
-        self._log_on_final_batch_helper('test')
+        # self._log_on_final_batch_helper('test')
+        self._log_meters('test')
         self._reset_meters()
         self.print_newln()
 

@@ -122,6 +122,10 @@ class BaseLightningModule(L.LightningModule):
         if self.next_line:
             print("\n")
 
+    @abstractmethod
+    def _log_meters(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
+        return NotImplemented
+
     def log_on_final_batch(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
         """Operations and measurements to log at the final batch, e.g., for epoch-level outputs.
 
