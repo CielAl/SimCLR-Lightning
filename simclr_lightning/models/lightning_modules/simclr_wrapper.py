@@ -207,17 +207,18 @@ class SimCLRLightning(BaseLightningModule):
         n = self.extra_val_interval
         if n is None or self.current_epoch % n != 0:
             return None
-        out = self._step(batch, phase_name)
+        out = self._step(batch, phase_name, batch_idx=batch_idx)
         return out
 
     def validation_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
         default_phase: PHASE_STR = 'validate'
-        if dataloader_idx == 0:
-            out = self._step(batch, default_phase, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
-        else:  # if multiple validation as extra measurement
-            # out = self._step_get_output(batch)
-            out = self._extra_val_every_n_epochs(batch, default_phase)
-        # out = self._step(batch, default_phase)
+        # if dataloader_idx == 0:
+        #     out = self._step(batch, default_phase, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
+        # else:  # if multiple validation as extra measurement
+        #     # out = self._step_get_output(batch)
+        #     out = self._extra_val_every_n_epochs(batch, default_phase)
+        # # out = self._step(batch, default_phase)
+        out = self._step(batch, default_phase, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
         return out
 
     def test_step(self, batch: ModelInput, batch_idx):
