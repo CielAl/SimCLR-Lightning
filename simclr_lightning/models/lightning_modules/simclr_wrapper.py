@@ -177,6 +177,10 @@ class SimCLRLightning(BaseLightningModule):
         return ModelOutput(loss=loss, logits=self.model.flat_out,
                            ground_truth=real_img, filename=filenames, meta=reconst_out)
 
+    def _reset_on_first_batch(self, batch_idx: int):
+        if batch_idx == 0:
+            self._reset_meters()
+
     def _step(self, batch: ModelInput, phase_name: PHASE_STR, batch_idx, dataloader_idx: int = 0):
         """Step function helper shared by training and validation steps which computes the logits and log the loss.
 
@@ -188,6 +192,7 @@ class SimCLRLightning(BaseLightningModule):
             NetOutput containing loss, logits (final-layer output) and true labels.
         """
         # stacked view of original and augmented images
+        self._reset_on_first_batch(batch_idx)
         out = self._step_get_output(batch)
         # log the TorchMetric object statistics to the logger/progbar
         self.log_on_final_batch(phase_name, dataloader_idx)
