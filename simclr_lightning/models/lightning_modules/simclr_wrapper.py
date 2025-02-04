@@ -195,7 +195,8 @@ class SimCLRLightning(BaseLightningModule):
         self._reset_on_first_batch(batch_idx)
         out = self._step_get_output(batch)
         # log the TorchMetric object statistics to the logger/progbar
-        self.log_on_final_batch(phase_name, dataloader_idx)
+        # self.log_on_final_batch(phase_name, dataloader_idx)
+        self._log_meters(phase_name, dataloader_idx)
         return out
 
     def training_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
@@ -203,11 +204,11 @@ class SimCLRLightning(BaseLightningModule):
         self.scheduler_step()
         return out
 
-    def _extra_val_every_n_epochs(self, batch: ModelInput, phase_name: PHASE_STR):
+    def _extra_val_every_n_epochs(self, batch: ModelInput, phase_name: PHASE_STR, batch_idx, dataloader_idx: int = 0):
         n = self.extra_val_interval
         if n is None or self.current_epoch % n != 0:
             return None
-        out = self._step(batch, phase_name, batch_idx=batch_idx)
+        out = self._step(batch, phase_name, batch_idx, dataloader_idx=dataloader_idx)
         return out
 
     def validation_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
@@ -252,12 +253,20 @@ class SimCLRLightning(BaseLightningModule):
                           ground_truth=labels, filename=filenames_list, meta=meta)
         return out
 
+    def _log_meters(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
+        self.log(f"{phase_name}_acc", self.accuracy, batch_size=self.batch_size,
+                 prog_bar=self.prog_bar, logger=True, sync_dist=True)
+        self.log(f"{phase_name}_loss", self.loss_avg, batch_size=self.batch_size,
+                 prog_bar=self.prog_bar, logger=True, sync_dist=True)
+        self.log(f"{phase_name}_class", self.class_avg, batch_size=self.batch_size,
+                 prog_bar=self.prog_bar, logger=True, sync_dist=True)
+        self.log(f"{phase_name}_reconst", self.reconst_avg, batch_size=self.batch_size,
+                 prog_bar=self.prog_bar, logger=True, sync_dist=True)
+        self.log(f"{phase_name}_psnr", self.psnr_meter, batch_size=self.batch_size,
+                 prog_bar=self.prog_bar, logger=True, sync_dist=True)
+
     def _log_on_final_batch_helper(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
-        self.log_meter(f"{phase_name}_acc", self.accuracy, logger=True, sync_dist=True)
-        self.log_meter(f"{phase_name}_loss", self.loss_avg, logger=True, sync_dist=True)
-        self.log_meter(f"{phase_name}_class", self.class_avg, logger=True, sync_dist=True)
-        self.log_meter(f"{phase_name}_reconst", self.reconst_avg, logger=True, sync_dist=True)
-        self.log_meter(f"{phase_name}_psnr", self.psnr_meter, logger=True, sync_dist=True)
+        self._log_meters(phase_name, dataloader_idx)
 
     def _reset_meters(self):
         self.accuracy.reset()
