@@ -177,7 +177,7 @@ class SimCLRLightning(BaseLightningModule):
         return ModelOutput(loss=loss, logits=self.model.flat_out,
                            ground_truth=real_img, filename=filenames, meta=reconst_out)
 
-    def _step(self, batch: ModelInput, phase_name: PHASE_STR):
+    def _step(self, batch: ModelInput, phase_name: PHASE_STR, batch_idx, dataloader_idx: int = 0):
         """Step function helper shared by training and validation steps which computes the logits and log the loss.
 
         Args:
@@ -190,11 +190,11 @@ class SimCLRLightning(BaseLightningModule):
         # stacked view of original and augmented images
         out = self._step_get_output(batch)
         # log the TorchMetric object statistics to the logger/progbar
-        self.log_on_final_batch(phase_name)
+        self.log_on_final_batch(phase_name, dataloader_idx)
         return out
 
-    def training_step(self, batch: ModelInput, batch_idx):
-        out = self._step(batch, 'fit')
+    def training_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
+        out = self._step(batch, 'fit', batch_idx, dataloader_idx)
         self.scheduler_step()
         return out
 
@@ -208,7 +208,7 @@ class SimCLRLightning(BaseLightningModule):
     def validation_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
         default_phase: PHASE_STR = 'validate'
         if dataloader_idx == 0:
-            out = self._step(batch, default_phase)
+            out = self._step(batch, default_phase, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
         else:  # if multiple validation as extra measurement
             # out = self._step_get_output(batch)
             out = self._extra_val_every_n_epochs(batch, default_phase)

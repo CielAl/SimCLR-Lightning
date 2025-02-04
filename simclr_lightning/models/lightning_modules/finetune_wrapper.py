@@ -17,6 +17,7 @@ class FinetuneLightning(BaseLightningModule):
     finetune_base: BaseFineTune
     max_t: int
     loss_func: Callable
+    num_classes: int
 
     @property
     def transforms_dict(self):
@@ -74,7 +75,7 @@ class FinetuneLightning(BaseLightningModule):
         transformed_feat = self._transforms_dict[mode](x)
         return self.finetune_base(transformed_feat)
 
-    def _step(self, batch: ModelInput, phase_name: PHASE_STR):
+    def _step(self, batch: ModelInput, phase_name: PHASE_STR, batch_idx: int, dataloader_idx: int = 0):
         """Step function helper shared by training and validation steps which computes the logits and log the loss.
 
         Args:
@@ -84,6 +85,7 @@ class FinetuneLightning(BaseLightningModule):
         Returns:
             NetOutput containing loss, logits (final-layer output) and true labels.
         """
+        self._reset_on_first_batch(batch_idx)
         img = batch['data']
         labels = batch['ground_truth'].long()
         filenames = batch['filename']
@@ -120,6 +122,10 @@ class FinetuneLightning(BaseLightningModule):
         self.log_meter(f"{phase_name}_auc", self.auc_metric, logger=True, sync_dist=True)
         self.log_meter(f"{phase_name}_loss", self.loss_avg, logger=True, sync_dist=True)
 
+    def _reset_on_first_batch(self, batch_idx: int):
+        if batch_idx == 0:
+            self._reset_meters()
+
     def _reset_meters(self):
         self.auc_metric.reset()
         self.loss_avg.reset()
@@ -135,17 +141,26 @@ class FinetuneLightning(BaseLightningModule):
     def on_test_epoch_end(self) -> None:
         self._reset_meters()
 
-    # noinspection PyUnusedLocal
-    def training_step(self, batch: ModelInput, batch_idx):
-        return self._step(batch, 'fit')
+    # def on_train_epoch_start(self) -> None:
+    #     self._reset_meters()
+    #
+    # def on_validation_epoch_start(self) -> None:
+    #     self._reset_meters()
+    #
+    # def on_test_epoch_start(self) -> None:
+    #     self._reset_meters()
 
     # noinspection PyUnusedLocal
-    def validation_step(self, batch: ModelInput, batch_idx):
-        return self._step(batch, 'validate')
+    def training_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
+        return self._step(batch, 'fit', batch_idx=batch_idx, dataloader_idx=dataloader_idx)
 
     # noinspection PyUnusedLocal
-    def test_step(self, batch: ModelInput, batch_idx):
-        return self._step(batch, 'test')
+    def validation_step(self, batch: ModelInput, batch_idx: int, dataloader_idx: int = 0):
+        return self._step(batch, 'validate', batch_idx=batch_idx, dataloader_idx=dataloader_idx)
+
+    # noinspection PyUnusedLocal
+    def test_step(self, batch: ModelInput, batch_idx: int, dataloader_idx: int = 0):
+        return self._step(batch, 'test', batch_idx=batch_idx, dataloader_idx=dataloader_idx)
 
     def load_base_state(self, state_dict):
         self.finetune_base.load_state_dict(state_dict)
@@ -175,6 +190,31 @@ class FinetuneLightning(BaseLightningModule):
                              ):
         simclr_base = simclr_lightning.model
         finetune_base = BaseFineTune.build_default(simclr_base, num_classes=num_classes, drop_rate=drop_rate)
+        result = cls.build_from_base_finetune(transforms_dict=transforms_dict,
+                                              finetune_base=finetune_base,
+                                              freeze_weight=freeze_weight,
+                                              betas=betas, weight_decay=weight_decay,
+                                              max_t=max_t,
+                                              lr=lr,
+                                              batch_size=batch_size,
+                                              prog_bar=prog_bar,
+                                              next_line=next_line,
+                                              loss_func=loss_func)
+        return result
+
+    @classmethod
+    def build_from_base_finetune(cls,
+                                 transforms_dict: nn.ModuleDict | Dict[PHASE_STR, Callable],
+                                 finetune_base: BaseFineTune,
+                                 freeze_weight: bool = False,
+                                 max_t: int = 90,
+                                 betas=(0.5, 0.99),
+                                 weight_decay: float = 1e-4,
+                                 lr: Optional[float] = 1e-3,
+                                 batch_size: Optional[int] = 64,
+                                 prog_bar: bool = True,
+                                 next_line: bool = True,
+                                 loss_func: Optional[Callable] = None):
         result = cls(transforms_dict=transforms_dict, finetune_base=finetune_base, freeze_weight=freeze_weight,
                      betas=betas, weight_decay=weight_decay,
                      max_t=max_t,

@@ -133,7 +133,8 @@ class BaseLightningModule(L.LightningModule):
         Returns:
 
         """
-        if not self.trainer.is_last_batch:  # not (self.trainer.is_last_batch or self.trainer.testing)
+        #  not (self.trainer.is_last_batch or self.trainer.testing)
+        if not self.trainer.is_last_batch:
             return
         self._log_on_final_batch_helper(phase_name, dataloader_idx)
 
