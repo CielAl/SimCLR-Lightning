@@ -7,6 +7,7 @@ from simclr_lightning.models.contrast_learning.loss import ContrastLoss, ReConst
 from simclr_lightning.models.lightning_modules.base import PHASE_STR, BaseLightningModule
 from simclr_lightning.models.contrast_learning.base import AbstractBaseModel
 from simclr_lightning.dataset.data_class import ModelInput, ModelOutput
+from simclr_lightning.models.metrics import MetricDict
 
 
 OPTIM_ADAM = Literal['adam']
@@ -14,8 +15,6 @@ OPTIM_ADAM = Literal['adam']
 OPTIM_LARS = Literal['lars']
 OPTIM_ADAMW = Literal['adamw']
 SUPPORTED_OPTIM = Literal[OPTIM_ADAM, OPTIM_ADAMW]
-
-random_erasing = tvtf.RandomErasing(p=0.0, scale=(0.02, 0.1))
 
 
 def _get_optim(name: SUPPORTED_OPTIM):
@@ -43,6 +42,12 @@ class SimCLRLightning(BaseLightningModule):
 
     image_channels: int
 
+    accuracy: MetricDict
+    loss_avg: MetricDict
+    class_avg: MetricDict
+    reconst_avg: MetricDict
+    psnr_meter: MetricDict
+
     @property
     def n_views(self):
         return self.model.n_views
@@ -62,7 +67,8 @@ class SimCLRLightning(BaseLightningModule):
                  extra_val_interval: Optional[int] = None,
                  recon_beta: float = 0.005,
                  image_channels: int = 3,
-                 optim_name: SUPPORTED_OPTIM = 'adam'
+                 optim_name: SUPPORTED_OPTIM = 'adam',
+                 random_erase_p: float = 0.0,
                  ):
         """Wrapper of LightningModule for SimCLR training.
 
@@ -104,28 +110,32 @@ class SimCLRLightning(BaseLightningModule):
         # meters for loss and acc
         num_classes = self.n_views * (self.batch_size - 1) + 1
         top_k = min(5, num_classes)
-        self.accuracy = torchmetrics.classification.Accuracy(task="multiclass",
-                                                             num_classes=2 * self.batch_size - 1, top_k=top_k)
+        # self.accuracy = torchmetrics.classification.Accuracy(task="multiclass",
+        #                                                      num_classes=2 * self.batch_size - 1, top_k=top_k)
         # calculate epoch-level mean cross-entropy loss
-        self.loss_avg = torchmetrics.MeanMetric(nan_strategy='ignore')
-        self.class_avg = torchmetrics.MeanMetric(nan_strategy='ignore')
-        self.reconst_avg = torchmetrics.MeanMetric(nan_strategy='ignore')
-        self.psnr_meter = torchmetrics.image.PeakSignalNoiseRatio(data_range=(0., 1.))
+        # self.loss_avg = MetricDict.build() # torchmetrics.MeanMetric(nan_strategy='ignore')
+        # self.class_avg = torchmetrics.MeanMetric(nan_strategy='ignore')
+        # self.reconst_avg = torchmetrics.MeanMetric(nan_strategy='ignore')
+        # self.psnr_meter = torchmetrics.image.PeakSignalNoiseRatio(data_range=(0., 1.))
+        self.accuracy = MetricDict.build_all_modes(torchmetrics.classification.Accuracy,
+                                                   task="multiclass",
+                                                   num_classes=2 * self.batch_size - 1, top_k=top_k
+                                                   )
+        self.loss_avg = MetricDict.build_all_modes(torchmetrics.MeanMetric, nan_strategy='ignore')
+        self.class_avg = MetricDict.build_all_modes(torchmetrics.MeanMetric, nan_strategy='ignore')
+        self.reconst_avg = MetricDict.build_all_modes(torchmetrics.MeanMetric, nan_strategy='ignore')
+        self.psnr_meter = MetricDict.build_all_modes(torchmetrics.image.PeakSignalNoiseRatio, data_range=(0., 1.))
 
         self.extra_val_interval = extra_val_interval
-
         self.image_channels = image_channels
-        # assert contrast_weight >= 0
-        # self.contrast_weight = contrast_weight
-        # assert reconst_weight >= 0
-        # self.reconst_weight = reconst_weight
-        # misc
         self.separate_optimizer = False
+
+        self.random_erasing = tvtf.RandomErasing(p=random_erase_p, scale=(0.02, 0.1))
 
     def forward(self, x, augment: bool):
         return self.model(x, augment=augment)
 
-    def _step_get_output(self, batch: ModelInput):
+    def _step_get_output(self, batch: ModelInput, phase_name: PHASE_STR):
         """Step helper shared by training and validation steps which computes the logits
 
         Args:
@@ -138,47 +148,37 @@ class SimCLRLightning(BaseLightningModule):
         images = batch['data'][:, :self.image_channels, ...]
         # explicitly do augmentation outside, and use masking upon augmentation output as the model input
         augment_images = self.model.augment_view(images).clamp(0, 1)
-
-        masked_images = random_erasing(augment_images)
-
+        masked_images = self.random_erasing(augment_images)
         # recon_batch_size = batch['data'].shape[0]  # // self.n_views
 
         # already augmented beforehand
         logits = self(masked_images, augment=False)  # self(images)
         # contrastive learning
-
         loss_contrast, (logits, labels) = self.contrast_loss(logits)
-
         is_valid_class_loss = isinstance(logits, torch.Tensor) and isinstance(labels, torch.Tensor)
         if is_valid_class_loss and self.contrast_loss.weight != 0:
-            self.accuracy.update(logits, labels)
-            self.class_avg.update(loss_contrast / self.contrast_loss.weight)
-
+            self.accuracy[phase_name].update(logits, labels)
+            self.class_avg[phase_name].update(loss_contrast / self.contrast_loss.weight)
         # recon
         #   # [:, :recon_batch_size, ...]  # self.model.aug_out  #
         real_img = self.model.aug_out[:, :self.image_channels, ...]
         if self.reconst_loss.weight > 0:
             reconst_out = self.model.reconst_out[:, :self.image_channels, ...]
             loss_recon = self.reconst_loss(real_img, reconst_out)
-            self.reconst_avg.update(loss_recon / self.reconst_loss.weight)
-            self.psnr_meter.update(reconst_out, real_img)
+            self.reconst_avg[phase_name].update(loss_recon / self.reconst_loss.weight)
+            self.psnr_meter[phase_name].update(reconst_out, real_img)
         else:
             loss_recon = 0.
             reconst_out = torch.zeros_like(real_img, device=real_img.device)
         # sum loss
         loss = loss_contrast + loss_recon
-
         # if torch.isnan(loss).any():
         #     breakpoint()
-        self.loss_avg.update(torch.Tensor(loss.detach()))
+        self.loss_avg[phase_name].update(torch.Tensor(loss))
         filenames = batch['filename']
 
         return ModelOutput(loss=loss, logits=self.model.flat_out,
                            ground_truth=real_img, filename=filenames, meta=reconst_out)
-
-    def _reset_on_first_batch(self, batch_idx: int):
-        if batch_idx == 0:
-            self._reset_meters()
 
     def _step(self, batch: ModelInput, phase_name: PHASE_STR, batch_idx, dataloader_idx: int = 0):
         """Step function helper shared by training and validation steps which computes the logits and log the loss.
@@ -191,38 +191,45 @@ class SimCLRLightning(BaseLightningModule):
             NetOutput containing loss, logits (final-layer output) and true labels.
         """
         # stacked view of original and augmented images
-        self._reset_on_first_batch(batch_idx)
-        out = self._step_get_output(batch)
-        # log the TorchMetric object statistics to the logger/progbar
-        # self.log_on_final_batch(phase_name, dataloader_idx)
-        self.log_all_metrics(phase_name, dataloader_idx)
+        out = self._step_get_output(batch, phase_name)
+        self.log_metrics(phase_name, dataloader_idx)
         return out
+
+    def _reset_on_first_batch(self, batch_idx: int, phase_name: PHASE_STR):
+        if batch_idx == 0:
+            # breakpoint()
+            self.reset_meter_phase(phase_name)
+
+    def reset_meter_phase(self, phase_name: PHASE_STR):
+        self.accuracy.reset_by_mode(phase_name)
+        self.loss_avg.reset_by_mode(phase_name)
+        self.class_avg.reset_by_mode(phase_name)
+        self.reconst_avg.reset_by_mode(phase_name)
+        self.psnr_meter.reset_by_mode(phase_name)
+
+    def reset_meter_all(self):
+        self.accuracy.reset_all()
+        self.loss_avg.reset_all()
+        self.class_avg.reset_all()
+        self.reconst_avg.reset_all()
+        self.psnr_meter.reset_all()
 
     def training_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
+        self._reset_on_first_batch(batch_idx, 'fit')
         out = self._step(batch, 'fit', batch_idx, dataloader_idx)
-        self.scheduler_step()
-        return out
-
-    def _extra_val_every_n_epochs(self, batch: ModelInput, phase_name: PHASE_STR, batch_idx, dataloader_idx: int = 0):
-        n = self.extra_val_interval
-        if n is None or self.current_epoch % n != 0:
-            return None
-        out = self._step(batch, phase_name, batch_idx, dataloader_idx=dataloader_idx)
+        # todo move
+        # self.scheduler_step()
         return out
 
     def validation_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
-        default_phase: PHASE_STR = 'validate'
-        # if dataloader_idx == 0:
-        #     out = self._step(batch, default_phase, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
-        # else:  # if multiple validation as extra measurement
-        #     # out = self._step_get_output(batch)
-        #     out = self._extra_val_every_n_epochs(batch, default_phase)
-        # # out = self._step(batch, default_phase)
-        out = self._step(batch, default_phase, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
+        val_phase: PHASE_STR = 'validate'
+        self._reset_on_first_batch(batch_idx, val_phase)
+        out = self._step(batch, val_phase, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
         return out
 
-    def test_step(self, batch: ModelInput, batch_idx):
-        return self._step_get_output(batch)
+    def test_step(self, batch: ModelInput, batch_idx: int, dataloader_idx: int = 0):
+        self._reset_on_first_batch(batch_idx, 'test')
+        return self._step(batch, 'test', batch_idx, dataloader_idx)
 
     def predict_step(self, batch: ModelInput, batch_idx: int, dataloader_idx: int = 0):
         """In prediction, labels may not be available. Thus, loss is filled 0s as placeholders.
@@ -239,6 +246,7 @@ class SimCLRLightning(BaseLightningModule):
         Returns:
             Prediction output.
         """
+        self._reset_on_first_batch(batch_idx, 'predict')
         images = batch['data']
         labels = batch['ground_truth']
         meta = batch['meta']
@@ -252,46 +260,40 @@ class SimCLRLightning(BaseLightningModule):
                           ground_truth=labels, filename=filenames_list, meta=meta)
         return out
 
-    def log_all_metrics(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
-        self.log(f"{phase_name}_acc", self.accuracy, batch_size=self.batch_size,
+    def log_metrics(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
+        # breakpoint()
+        self.log(f"{phase_name}_acc", self.accuracy.get_metric(phase_name),
+                 batch_size=self.batch_size,
+                 prog_bar=self.prog_bar,
+                 logger=True,
+                 sync_dist=True, on_epoch=True,
+                 on_step=False)
+        self.log(f"{phase_name}_loss", self.loss_avg.get_metric(phase_name),
+                 batch_size=self.batch_size,
                  prog_bar=self.prog_bar, logger=True, sync_dist=True, on_epoch=True,
                  on_step=False)
-        self.log(f"{phase_name}_loss", self.loss_avg, batch_size=self.batch_size,
+        self.log(f"{phase_name}_class", self.class_avg.get_metric(phase_name),
+                 batch_size=self.batch_size,
                  prog_bar=self.prog_bar, logger=True, sync_dist=True, on_epoch=True,
                  on_step=False)
-        self.log(f"{phase_name}_class", self.class_avg, batch_size=self.batch_size,
+        self.log(f"{phase_name}_reconst", self.reconst_avg.get_metric(phase_name),
+                 batch_size=self.batch_size,
                  prog_bar=self.prog_bar, logger=True, sync_dist=True, on_epoch=True,
                  on_step=False)
-        self.log(f"{phase_name}_reconst", self.reconst_avg, batch_size=self.batch_size,
-                 prog_bar=self.prog_bar, logger=True, sync_dist=True, on_epoch=True,
-                 on_step=False)
-        self.log(f"{phase_name}_psnr", self.psnr_meter, batch_size=self.batch_size,
+        self.log(f"{phase_name}_psnr", self.psnr_meter.get_metric(phase_name),
+                 batch_size=self.batch_size,
                  prog_bar=self.prog_bar, logger=True, sync_dist=True, on_epoch=True,
                  on_step=False)
 
-    def _log_on_final_batch_helper(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
-        # self._log_meters(phase_name, dataloader_idx)
-        ...
-
-    def _reset_meters(self):
-        self.accuracy.reset()
-        self.loss_avg.reset()
-        self.class_avg.reset()
-        self.reconst_avg.reset()
-        self.psnr_meter.reset()
-
-    def on_train_epoch_end(self) -> None:
-        self._reset_meters()
+    def on_train_epoch_start(self) -> None:
+        self.reset_meter_all()
 
     def on_validation_epoch_end(self) -> None:
-        self._reset_meters()
         self.print_newln()
 
     def on_test_epoch_end(self) -> None:
-        # self._log_on_final_batch_helper('test')
-        self.log_all_metrics('test')
-        self._reset_meters()
         self.print_newln()
+        self.reset_meter_phase('test')
 
     def configure_optimizers(self):
         if not self.separate_optimizer:

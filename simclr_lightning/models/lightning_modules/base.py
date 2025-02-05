@@ -82,8 +82,9 @@ class BaseLightningModule(L.LightningModule):
         sch = self.lr_schedulers()
         # self.log("LR", sch.get_last_lr(), on_epoch=True, prog_bar=self.prog_bar,
         #          logger=True, batch_size=self.batch_size, sync_dist=True)
-        if self.trainer.is_last_batch and self.trainer.current_epoch >= self.WARM_UP_EPOCH:
-            sch.step()
+        # sch = scheduler
+        if self.trainer.training and self.trainer.is_last_batch and self.trainer.current_epoch >= self.WARM_UP_EPOCH:
+            sch.step()  # metrics=metric, epoch=self.trainer.current_epoch
 
     def __init__(self, batch_size: int, lr: float, max_t: int, prog_bar: bool, next_line: bool,
                  optim_func: Callable = torch.optim.Adam,
@@ -106,7 +107,7 @@ class BaseLightningModule(L.LightningModule):
         self.max_t = max_t
         self.optim_func = optim_func
 
-    def _reset_meters(self, *args, **kwargs):
+    def reset_meter_phase(self, *args, **kwargs):
         """reset all torchmetrics meters
 
         Args:
@@ -116,42 +117,16 @@ class BaseLightningModule(L.LightningModule):
         Returns:
 
         """
-        return NotImplemented
+        raise NotImplementedError
 
     def print_newln(self):
         if self.next_line:
             print("\n")
 
-    @abstractmethod
-    def log_all_metrics(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
-        return NotImplemented
+    def _reset_on_first_batch(self, batch_idx: int, phase_name: PHASE_STR):
+        if batch_idx == 0:
+            # breakpoint()
+            self.reset_meter_phase(phase_name)
 
-    def log_on_final_batch(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
-        """Operations and measurements to log at the final batch, e.g., for epoch-level outputs.
-
-        Override `_log_on_final_batch_helper` for detailed procedures.
-
-        Args:
-            phase_name:
-            dataloader_idx: int
-        Returns:
-
-        """
-        #  not (self.trainer.is_last_batch or self.trainer.testing)
-        if not self.trainer.is_last_batch:
-            return
-        self._log_on_final_batch_helper(phase_name, dataloader_idx)
-
-    @abstractmethod
-    def _log_on_final_batch_helper(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
-        """Override to implement detailed procedures in log_on_final_batch.
-
-        Args:
-            phase_name:
-
-        Returns:
-
-        """
+    def reset_meter_all(self):
         raise NotImplementedError
-
-

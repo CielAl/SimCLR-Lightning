@@ -10,6 +10,7 @@ from simclr_lightning.models.lightning_modules.base import PHASE_STR, BaseLightn
 from simclr_lightning.models.contrast_learning.finetune import BaseFineTune
 from simclr_lightning.models.lightning_modules.simclr_wrapper import SimCLRLightning
 from simclr_lightning.dataset.data_class import ModelInput, ModelOutput
+from simclr_lightning.models.metrics import MetricDict
 
 
 class FinetuneLightning(BaseLightningModule):
@@ -18,6 +19,10 @@ class FinetuneLightning(BaseLightningModule):
     max_t: int
     loss_func: Callable
     num_classes: int
+
+    auc_metric: MetricDict
+    loss_avg: MetricDict
+    conf_mat: MetricDict
 
     @property
     def transforms_dict(self):
@@ -61,9 +66,12 @@ class FinetuneLightning(BaseLightningModule):
         self.freeze_pretrained_model(freeze_weight)
 
         # metrics
-        self.auc_metric = AUROC("multiclass", num_classes=self.num_classes)  # BinaryAUROC(thresholds=None)
-        self.loss_avg = MeanMetric()
-        self.conf_mat = ConfusionMatrix('multiclass', num_classes=self.num_classes, normalize="true")
+        #  # BinaryAUROC(thresholds=None)
+        self.auc_metric = MetricDict.build_all_modes(AUROC, task="multiclass",
+                                                     num_classes=self.num_classes, average='macro')
+        self.loss_avg = MetricDict.build_all_modes(MeanMetric, nan_strategy='ignore')
+        self.conf_mat = MetricDict.build_all_modes(ConfusionMatrix, task='multiclass', num_classes=self.num_classes,
+                                                   normalize="true")
 
         # loss
         self.loss_func = nn.CrossEntropyLoss()
@@ -85,7 +93,7 @@ class FinetuneLightning(BaseLightningModule):
         Returns:
             NetOutput containing loss, logits (final-layer output) and true labels.
         """
-        self._reset_on_first_batch(batch_idx)
+        self._reset_on_first_batch(batch_idx, phase_name)
         img = batch['data']
         labels = batch['ground_truth'].long()
         filenames = batch['filename']
@@ -94,16 +102,17 @@ class FinetuneLightning(BaseLightningModule):
         loss = self.loss_func(logits, labels)
 
         # update meters
-        self.loss_avg.update(loss)
-        self.auc_metric.update(logits, labels)
-        self.conf_mat.update(logits, labels)
+        self.loss_avg.get_metric(phase_name).update(loss)
+        self.auc_metric.get_metric(phase_name).update(logits, labels)
+        self.conf_mat.get_metric(phase_name).update(logits, labels)
         out = ModelOutput(loss=loss, logits=logits, ground_truth=labels, filename=filenames, meta=batch['meta'])
         # self.log_on_final_batch(phase_name)
-        self.log_all_metrics(phase_name, dataloader_idx)
+        self.log_metrics(phase_name, dataloader_idx)
         return out
 
     # noinspection PyUnusedLocal
     def predict_step(self, batch, batch_idx: int, dataloader_idx: int = 0):
+        self._reset_on_first_batch(batch_idx, 'predict')
         img = batch['data']
         labels = batch['ground_truth'].long()
         filenames = batch['filename']
@@ -119,39 +128,35 @@ class FinetuneLightning(BaseLightningModule):
                           meta=meta)
         return out
 
-    def _log_on_final_batch_helper(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
-        # self.log_meter(f"{phase_name}_auc", self.auc_metric, logger=True, sync_dist=True)
-        # self.log_meter(f"{phase_name}_loss", self.loss_avg, logger=True, sync_dist=True)
-        ...
-
-    def log_all_metrics(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
-        self.log(f"{phase_name}_auc", self.auc_metric,
+    def log_metrics(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
+        self.log(f"{phase_name}_auc", self.auc_metric.get_metric(phase_name),
                  batch_size=self.batch_size, prog_bar=self.prog_bar,
                  logger=True, sync_dist=True,
                  on_epoch=True, on_step=False)
-        self.log(f"{phase_name}_loss", self.loss_avg,
+        self.log(f"{phase_name}_loss", self.loss_avg.get_metric(phase_name),
                  batch_size=self.batch_size, prog_bar=self.prog_bar,
                  logger=True, sync_dist=True,
                  on_epoch=True, on_step=False)
 
-    def _reset_on_first_batch(self, batch_idx: int):
-        if batch_idx == 0:
-            self._reset_meters()
+    def reset_meter_phase(self, phase_name: PHASE_STR, dataloader_idx: int = 0):
+        self.auc_metric.get_metric(phase_name).reset()
+        self.loss_avg.get_metric(phase_name).reset()
+        self.conf_mat.get_metric(phase_name).reset()
 
-    def _reset_meters(self):
-        self.auc_metric.reset()
-        self.loss_avg.reset()
-        self.conf_mat.reset()
+    def reset_meter_all(self):
+        self.auc_metric.reset_all()
+        self.loss_avg.reset_all()
+        self.conf_mat.reset_all()
 
-    def on_train_epoch_end(self) -> None:
-        self._reset_meters()
+    def on_train_epoch_start(self) -> None:
+        self.reset_meter_all()
 
     def on_validation_epoch_end(self) -> None:
-        self._reset_meters()
         self.print_newln()
 
     def on_test_epoch_end(self) -> None:
-        self._reset_meters()
+        self.print_newln()
+        self.reset_meter_phase('test')
 
     # noinspection PyUnusedLocal
     def training_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
