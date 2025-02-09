@@ -10,12 +10,56 @@ SUPPORTED_RESNET = Literal['resnet18', 'resnet50',
                            'densenet121', 'densenet161', 'densenet169', 'densenet201']
 
 
-class BaseModelCore(nn.Module):
+def set_module_hook_func(parent: nn.Module,
+                         module: nn.Module, module_name: str, hook_name: str):
+    # if (not hasattr(module, module_name)) or getattr(module, module_name) is not module:
+    setattr(parent, module_name, module)
+    hook = register_output_hook(module)
+    setattr(parent, hook_name, hook)
+
+
+class HookedModel(nn.Module):
+
+    def set_module_hook(self, module, module_name, hook_name):
+        set_module_hook_func(self, module, module_name, hook_name)
+
+    def __init__(self):
+        super().__init__()
+
+
+class BaseDecoder(HookedModel):
+    middle_blocks: nn.Module
+    _mid_dec_hook: HookSimple
+
+    def __init__(self):
+        super().__init__()
+
+    def update_mid_blocks(self, middle_blocks: nn.Module) -> None:
+        # self.__augment_view = augment_view
+        # self._aug_hook = register_output_hook(self.__augment_view)
+        self.set_module_hook(middle_blocks, 'middle_blocks', '_mid_dec_hook')
+
+    @property
+    def mid_out(self):
+        return self._mid_dec_hook.stored
+
+
+class DefaultDecoder(BaseDecoder):
+
+    def __init__(self):
+        super().__init__()
+        self.update_mid_blocks(nn.Identity())
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.middle_blocks(x)
+
+
+class BaseModelCore(HookedModel):
     augment_view: AugmentationView
     backbone: nn.Module
     flattener: nn.Module
     projection_head: nn.Sequential
-    decoder: nn.Module
+    decoder: BaseDecoder
     dec_shortcut: nn.Module
 
     _n_views: int
@@ -55,10 +99,17 @@ class BaseModelCore(nn.Module):
         return nn.Sequential(module)
 
     @classmethod
-    def default_identity(cls, module: Optional[nn.Module]):
+    def _default_identity(cls, module: Optional[nn.Module]):
         if module is None:
             return nn.Identity()
         assert isinstance(module, nn.Module)
+        return module
+
+    @classmethod
+    def _validate_decoder(cls, module: Optional[nn.Module]):
+        if module is None:
+            return DefaultDecoder()
+        assert isinstance(module, BaseDecoder)
         return module
 
     def __init__(self,
@@ -68,7 +119,7 @@ class BaseModelCore(nn.Module):
                  projection: nn.Sequential,
                  hidden_dim: int,
                  reconstruct: bool = False,
-                 decoder: Optional[nn.Module] = None,
+                 decoder: Optional[BaseDecoder] = None,
                  return_recon: bool = False,
                  dec_shortcut: Optional[nn.Module] = None,
                  add_shortcut: bool = False,
@@ -88,11 +139,11 @@ class BaseModelCore(nn.Module):
         self.update_projection_head(BaseModelCore.to_sequential(projection))
         self._reconstruct = reconstruct
 
-        decoder = self.__class__.default_identity(decoder)
+        decoder = self.__class__._validate_decoder(decoder)
         # decoder =nn.Identity() if decoder is None else decoder
         self.update_decoder(decoder)
 
-        dec_shortcut = self.__class__.default_identity(dec_shortcut)
+        dec_shortcut = self.__class__._default_identity(dec_shortcut)
         # dec_shortcut = nn.Identity() if dec_shortcut is None else dec_shortcut
         self.update_dec_shortcut(dec_shortcut)
 
@@ -105,11 +156,6 @@ class BaseModelCore(nn.Module):
         # self._enc_hook = register_output_hook(self.backbone)
         # self._proj_hook = register_output_hook(self.projection_head)
         # self._dec_hook = register_output_hook(self.decoder)
-
-    def set_module_hook(self, module, module_name, hook_name):
-        setattr(self, module_name, module)
-        hook = register_output_hook(module)
-        setattr(self, hook_name, hook)
 
     def update_flattener(self, module: nn.Module):
         # self.__flattener = module
@@ -131,7 +177,7 @@ class BaseModelCore(nn.Module):
         # self._proj_hook = register_output_hook(self.__projection_head)
         self.set_module_hook(projection, 'projection_head', '_proj_hook')
 
-    def update_decoder(self, new_decoder: nn.Module):
+    def update_decoder(self, new_decoder: BaseDecoder):
         # self.__decoder = new_decoder
         # self._dec_hook = register_output_hook(self.__decoder)
         self.set_module_hook(new_decoder, 'decoder', '_dec_hook')
@@ -182,6 +228,10 @@ class BaseModelCore(nn.Module):
     @property
     def flat_out(self):
         return self.flatten_hook.stored
+
+    @property
+    def mid_out(self):
+        return self.decoder.mid_out
 
     def augmentation(self, x: torch.Tensor):
         return self.augment_view(x)
@@ -251,7 +301,7 @@ class AbstractBaseModel(BaseModelCore):
                  out_dim,
                  projection_bn: bool,
                  reconstruct: bool = False,
-                 decoder: Optional[nn.Module] = None,
+                 decoder: Optional[BaseDecoder] = None,
                  return_recon: bool = False,
                  **backbone_args):
         backbone, flattener, projection_hidden_dim = self._get_backbone_model_config(model_name, **backbone_args)
@@ -282,7 +332,7 @@ class AbstractBaseModel(BaseModelCore):
               out_dim: int,
               projection_bn: bool = True,
               reconstruct: bool = False,
-              decoder: Optional[nn.Module] = None,
+              decoder: Optional[BaseDecoder] = None,
               return_recon: bool = False,
               **backbone_args):
         view_generator = AugmentationView(transforms, n_views=n_views)

@@ -1,6 +1,6 @@
 from torchmetrics import Metric
 from torch import nn
-from typing import List, Any, Type
+from typing import List, Any, Type, Iterator, cast
 
 
 class MetricList(Metric):
@@ -27,3 +27,6 @@ class MetricList(Metric):
     def build_from_type(cls, metric: Type[Metric], num_metrics: int, **kwargs):
         metric_list: List[Metric] = [metric(**kwargs) for _ in range(num_metrics)]
         return cls(metric_list)
+
+    def __iter__(self) -> Iterator[Metric]:
+        return cast(Iterator[Metric], iter(self.metric_list))
