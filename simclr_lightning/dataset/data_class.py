@@ -23,6 +23,7 @@ class ModelInput(TypedDict):
     filename: str
     meta:  Union[float, int, TYPE_IMG_ARRAY, List[TYPE_IMG_ARRAY]]
     ground_truth: Union[int, float, np.ndarray, torch.Tensor]
+    mask: Union[int, float, np.ndarray, torch.Tensor]
 
 
 class ModelOutput(TypedDict):

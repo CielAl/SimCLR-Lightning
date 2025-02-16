@@ -4,7 +4,7 @@ import torchmetrics
 from torchvision import transforms as tvtf
 from simclr_lightning.models.contrast_learning.loss import ContrastLoss, ReConstLoss
 
-from simclr_lightning.models.lightning_modules.base import PHASE_STR, BaseLightningModule
+from simclr_lightning.models.lightning_modules.base import PHASE_STR, BaseLightningModule, feature_norm_penalty
 from simclr_lightning.models.contrast_learning.base import AbstractBaseModel
 from simclr_lightning.dataset.data_class import ModelInput, ModelOutput
 from simclr_lightning.models.metrics import MetricDict
@@ -47,6 +47,11 @@ class SimCLRLightning(BaseLightningModule):
     class_avg: MetricDict
     reconst_avg: MetricDict
     psnr_meter: MetricDict
+    enc_penalty_meter: MetricDict
+
+    norm_penalty: bool
+    norm_target: float
+    norm_lambda: float
 
     @property
     def n_views(self):
@@ -69,6 +74,9 @@ class SimCLRLightning(BaseLightningModule):
                  image_channels: int = 3,
                  optim_name: SUPPORTED_OPTIM = 'adam',
                  random_erase_p: float = 0.0,
+                 norm_penalty: bool = False,
+                 norm_target: float = 1000,
+                 norm_lambda: float = 1e-3,
                  ):
         """Wrapper of LightningModule for SimCLR training.
 
@@ -126,14 +134,33 @@ class SimCLRLightning(BaseLightningModule):
         self.reconst_avg = MetricDict.build_all_modes(torchmetrics.MeanMetric, nan_strategy='ignore')
         self.psnr_meter = MetricDict.build_all_modes(torchmetrics.image.PeakSignalNoiseRatio, data_range=(0., 1.))
 
+        self.enc_penalty_meter = MetricDict.build_all_modes(torchmetrics.MeanMetric, nan_strategy='ignore')
+
         self.extra_val_interval = extra_val_interval
         self.image_channels = image_channels
         self.separate_optimizer = False
 
         self.random_erasing = tvtf.RandomErasing(p=random_erase_p, scale=(0.02, 0.1))
 
-    def forward(self, x, augment: bool):
-        return self.model(x, augment=augment)
+        self.norm_penalty = norm_penalty
+        self.norm_target = norm_target
+        self.norm_lambda = norm_lambda
+
+    def forward(self, x, augment: bool, mask: Optional[torch.Tensor]):
+        return self.model(x, augment=augment, mask=mask)
+
+    def _step_enc_norm_penalty(self, phase_name: PHASE_STR):
+        if not self.norm_penalty:
+            return 0.
+        if not isinstance(self.model, AbstractBaseModel):
+            return 0.
+
+        feat_map = self.model.enc_out
+        if feat_map is None:
+            return 0.
+        norm_loss = feature_norm_penalty(feat_map, self.norm_target, self.norm_lambda)
+        self.enc_penalty_meter.get_metric(phase_name).update(norm_loss)
+        return norm_loss
 
     def _step_get_output(self, batch: ModelInput, phase_name: PHASE_STR):
         """Step helper shared by training and validation steps which computes the logits
@@ -147,12 +174,13 @@ class SimCLRLightning(BaseLightningModule):
         # stacked view of original and augmented images
         images = batch['data'][:, :self.image_channels, ...]
         # explicitly do augmentation outside, and use masking upon augmentation output as the model input
+
         augment_images = self.model.augment_view(images).clamp(0, 1)
         masked_images = self.random_erasing(augment_images)
         # recon_batch_size = batch['data'].shape[0]  # // self.n_views
 
         # already augmented beforehand
-        logits = self(masked_images, augment=False)  # self(images)
+        logits = self(masked_images, augment=False, mask=batch['mask'])  # self(images)
         # contrastive learning
         loss_contrast, (logits, labels) = self.contrast_loss(logits)
         is_valid_class_loss = isinstance(logits, torch.Tensor) and isinstance(labels, torch.Tensor)
@@ -171,9 +199,12 @@ class SimCLRLightning(BaseLightningModule):
             loss_recon = 0.
             reconst_out = torch.zeros_like(real_img, device=real_img.device)
         # sum loss
-        loss = loss_contrast + loss_recon
+        loss_norm_reg = self._step_enc_norm_penalty(phase_name)
+
+        loss = loss_contrast + loss_recon + loss_norm_reg
         # if torch.isnan(loss).any():
         #     breakpoint()
+
         self.loss_avg[phase_name].update(torch.Tensor(loss))
         filenames = batch['filename']
 
@@ -206,6 +237,7 @@ class SimCLRLightning(BaseLightningModule):
         self.class_avg.reset_by_mode(phase_name)
         self.reconst_avg.reset_by_mode(phase_name)
         self.psnr_meter.reset_by_mode(phase_name)
+        self.enc_penalty_meter.reset_by_mode(phase_name)
 
     def reset_meter_all(self):
         self.accuracy.reset_all()
@@ -213,6 +245,7 @@ class SimCLRLightning(BaseLightningModule):
         self.class_avg.reset_all()
         self.reconst_avg.reset_all()
         self.psnr_meter.reset_all()
+        self.enc_penalty_meter.reset_all()
 
     def training_step(self, batch: ModelInput, batch_idx, dataloader_idx: int = 0):
         self._reset_on_first_batch(batch_idx, 'fit')
@@ -284,6 +317,12 @@ class SimCLRLightning(BaseLightningModule):
                  batch_size=self.batch_size,
                  prog_bar=self.prog_bar, logger=True, sync_dist=True, on_epoch=True,
                  on_step=False)
+
+        if self.norm_penalty:
+            self.log(f'{phase_name}_enc_penalty',
+                     self.enc_penalty_meter.get_metric(phase_name),
+                     on_epoch=True, on_step=False, batch_size=self.batch_size,
+                     prog_bar=self.prog_bar, sync_dist=True, logger=True)
 
     def on_train_epoch_start(self) -> None:
         self.reset_meter_all()

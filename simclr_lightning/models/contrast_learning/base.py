@@ -4,10 +4,12 @@ from simclr_lightning.models.contrast_learning.transforms import AugmentationVie
 from simclr_lightning.models.hooks import register_output_hook, HookSimple
 from typing import Tuple, Literal, Callable, Optional
 import torch
+from .masking import feat_masking
 
 SUPPORTED_RESNET = Literal['resnet18', 'resnet50',
                            'resnet34', 'resnet101', 'resnet152',
-                           'densenet121', 'densenet161', 'densenet169', 'densenet201']
+                           'densenet121', 'densenet161',
+                           'densenet169', 'densenet201']
 
 
 def set_module_hook_func(parent: nn.Module,
@@ -61,6 +63,7 @@ class BaseModelCore(HookedModel):
     projection_head: nn.Sequential
     decoder: BaseDecoder
     dec_shortcut: nn.Module
+    aux_classifier: nn.Module
 
     _n_views: int
     _hidden_dim: int
@@ -68,6 +71,8 @@ class BaseModelCore(HookedModel):
     _reconstruct: bool
     add_shortcut: bool
     return_recon: bool
+    do_prediction: bool
+    detach_aux_input: bool
 
     _aug_hook: HookSimple
     _enc_hook: HookSimple
@@ -75,6 +80,7 @@ class BaseModelCore(HookedModel):
     _dec_hook: HookSimple
     _flatten_hook: HookSimple
     _dec_shortcut_hook: HookSimple
+    _aux_class_hook: HookSimple
 
     @property
     def reconstruct(self) -> bool:
@@ -106,7 +112,7 @@ class BaseModelCore(HookedModel):
         return module
 
     @classmethod
-    def _validate_decoder(cls, module: Optional[nn.Module]):
+    def validate_decoder(cls, module: Optional[nn.Module]):
         if module is None:
             return DefaultDecoder()
         assert isinstance(module, BaseDecoder)
@@ -123,6 +129,10 @@ class BaseModelCore(HookedModel):
                  return_recon: bool = False,
                  dec_shortcut: Optional[nn.Module] = None,
                  add_shortcut: bool = False,
+                 classifier: Optional[nn.Module] = None,
+                 do_prediction: bool = False,
+                 dynamic_scaling: bool = True,
+                 detach_aux_input: bool = False,
                  ):
         super().__init__()
 
@@ -139,9 +149,12 @@ class BaseModelCore(HookedModel):
         self.update_projection_head(BaseModelCore.to_sequential(projection))
         self._reconstruct = reconstruct
 
-        decoder = self.__class__._validate_decoder(decoder)
+        decoder = self.__class__.validate_decoder(decoder)
         # decoder =nn.Identity() if decoder is None else decoder
         self.update_decoder(decoder)
+
+        classifier = self.__class__._default_identity(classifier)
+        self.update_classifier(classifier)
 
         dec_shortcut = self.__class__._default_identity(dec_shortcut)
         # dec_shortcut = nn.Identity() if dec_shortcut is None else dec_shortcut
@@ -151,11 +164,16 @@ class BaseModelCore(HookedModel):
         self.return_recon = return_recon
 
         self.add_shortcut = add_shortcut
+        self.do_prediction = do_prediction
+        self.dynamic_scaling = dynamic_scaling
 
         # self._aug_hook = register_output_hook(self.augment_view)
         # self._enc_hook = register_output_hook(self.backbone)
         # self._proj_hook = register_output_hook(self.projection_head)
         # self._dec_hook = register_output_hook(self.decoder)
+        scaling = torch.ones(self._hidden_dim, 1, 1)
+        self.scaling = scaling if not self.dynamic_scaling else nn.Parameter(scaling)
+        self.detach_aux_input = detach_aux_input
 
     def update_flattener(self, module: nn.Module):
         # self.__flattener = module
@@ -181,6 +199,9 @@ class BaseModelCore(HookedModel):
         # self.__decoder = new_decoder
         # self._dec_hook = register_output_hook(self.__decoder)
         self.set_module_hook(new_decoder, 'decoder', '_dec_hook')
+
+    def update_classifier(self, new_classifier: nn.Module):
+        self.set_module_hook(new_classifier, 'aux_classifier', '_aux_class_hook')
 
     def update_dec_shortcut(self, new_dec_shortcut: nn.Module):
         self.set_module_hook(new_dec_shortcut, 'dec_shortcut', '_dec_shortcut_hook')
@@ -210,8 +231,20 @@ class BaseModelCore(HookedModel):
         return self._dec_shortcut_hook
 
     @property
+    def aux_class_hook(self):
+        return self._aux_class_hook
+
+    @property
+    def aux_class_out(self):
+        return self._aux_class_hook.stored
+
+    @property
     def aug_out(self):
         return self.aug_hook.stored
+
+    @property
+    def short_out(self):
+        return self._dec_shortcut_hook.stored
 
     @property
     def enc_out(self):
@@ -241,26 +274,41 @@ class BaseModelCore(HookedModel):
             # aux. stored in the hook
             return
         if self.add_shortcut:
-            embedding_feat = embedding_feat + self.dec_shortcut(x)
+            embedding_feat = embedding_feat + self.scaling * self.dec_shortcut(x)
         self.decoder(embedding_feat)
 
-    def inference(self, x: torch.Tensor):
+    def class_path(self, mask: Optional[torch.Tensor]):
+        if not self.reconstruct:
+            # use reconstruct path feature
+            return
+        if not self.do_prediction:
+            return
+        # todo? where does this happen
+        feat = self.decoder.mid_out
+        assert feat is not None
+        if self.detach_aux_input:
+            feat = feat.detach()
+        feat_masked = feat_masking(feat, mask)
+        self.aux_classifier(feat_masked)
+
+    def inference(self, x: torch.Tensor, mask: Optional[torch.Tensor]):
         embedding_feat = self.backbone(x)
         flattened_feat = self.flattener(embedding_feat)
         self.reconstruct_path(x, embedding_feat)
+        self.class_path(mask)
         return flattened_feat
 
     def output_prediction(self, feat: torch.Tensor):
         return self.projection_head(feat)
 
-    def forward(self, x, augment: bool = True):
+    def forward(self, x, augment: bool = True, mask: Optional[torch.Tensor] = None):
         transformed_input = self.augment_view(x) if augment else x
         # embedding_feat = self.backbone(transformed_input)
         # flattened_feat = self.flattener(embedding_feat)
         # if self.reconstruct:
         #     # aux. stored in the hook
         #     self.decoder(embedding_feat)
-        flattened_feat = self.inference(transformed_input)
+        flattened_feat = self.inference(transformed_input, mask)
         project_feat = self.projection_head(flattened_feat)
         if self.return_recon:
             assert self.reconstruct
@@ -303,11 +351,25 @@ class AbstractBaseModel(BaseModelCore):
                  reconstruct: bool = False,
                  decoder: Optional[BaseDecoder] = None,
                  return_recon: bool = False,
+                 dec_shortcut: Optional[nn.Module] = None,
+                 add_shortcut: bool = False,
+                 classifier: Optional[nn.Module] = None,
+                 do_prediction: bool = False,
+                 dynamic_scaling: bool = True,
+                 detach_aux_input: bool = False,
                  **backbone_args):
         backbone, flattener, projection_hidden_dim = self._get_backbone_model_config(model_name, **backbone_args)
         hidden_dim = projection_hidden_dim
         projection = self._sequential_projection(projection_hidden_dim, out_dim, projection_bn=projection_bn)
-        super().__init__(augment_view, backbone, flattener, projection, hidden_dim, reconstruct, decoder, return_recon)
+        super().__init__(augment_view, backbone, flattener,
+                         projection, hidden_dim, reconstruct,
+                         decoder, return_recon,
+                         dec_shortcut=dec_shortcut,
+                         add_shortcut=add_shortcut,
+                         classifier=classifier,
+                         do_prediction=do_prediction,
+                         dynamic_scaling=dynamic_scaling,
+                         detach_aux_input=detach_aux_input)
 
     @abstractmethod
     def _get_backbone_model_config(self, model_name: str, **backbone_args) -> Tuple[nn.Module, nn.Module, int]:
@@ -334,9 +396,44 @@ class AbstractBaseModel(BaseModelCore):
               reconstruct: bool = False,
               decoder: Optional[BaseDecoder] = None,
               return_recon: bool = False,
+              dec_shortcut: Optional[nn.Module] = None,
+              add_shortcut: bool = False,
+              classifier: Optional[nn.Module] = None,
+              do_prediction: bool = False,
+              dynamic_scaling: bool = True,
+              detach_aux_input: bool = False,
               **backbone_args):
+        """
+
+        Args:
+            transforms:
+            n_views:
+            model_name:
+            out_dim:
+            projection_bn:
+            reconstruct:
+            decoder:
+            return_recon:
+            dec_shortcut:
+            add_shortcut:
+            classifier:
+            do_prediction:
+            dynamic_scaling:
+            detach_aux_input:
+            **backbone_args:
+
+        Returns:
+
+        """
         view_generator = AugmentationView(transforms, n_views=n_views)
         return cls(augment_view=view_generator,
                    model_name=model_name, out_dim=out_dim,
-                   projection_bn=projection_bn, reconstruct=reconstruct, decoder=decoder, return_recon=return_recon,
+                   projection_bn=projection_bn, reconstruct=reconstruct, decoder=decoder,
+                   return_recon=return_recon,
+                   dec_shortcut=dec_shortcut,
+                   add_shortcut=add_shortcut,
+                   classifier=classifier,
+                   do_prediction=do_prediction,
+                   dynamic_scaling=dynamic_scaling,
+                   detach_aux_input=detach_aux_input,
                    **backbone_args)

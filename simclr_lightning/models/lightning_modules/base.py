@@ -12,6 +12,14 @@ PHASE_PRED = Literal['predict']
 PHASE_STR = Literal[PHASE_TRAIN, PHASE_VAL, PHASE_TEST, PHASE_PRED]
 
 
+def feature_norm_penalty(feature_map: torch.Tensor,
+                         target_norm: torch.Tensor | float = 1000.0,
+                         lambda_scale: torch.Tensor | float = 1e-3):
+    norm = feature_map.view(feature_map.size(0), -1).norm(p=2, dim=1)
+    loss = lambda_scale * ((norm - target_norm) ** 2).mean()  # Penalize deviation
+    return loss
+
+
 class BaseLightningModule(L.LightningModule):
     WARM_UP_EPOCH: int = 10
 

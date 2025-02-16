@@ -17,7 +17,7 @@ class DenseNetBaseModel(AbstractBaseModel):
         assert isinstance(constructor, Callable)
         model_func = partial(constructor, num_classes=2)
         base_model = model_func()
-        hidden_dim = base_model.classifier.in_features
+        hidden_dim = base_model.aux_classifier.in_features
         # doing the below will butcher the dimensionality due to the extra x = torch.flatten(x, 1) in resnet
         # base_model.avgpool = nn.Identity()
         # base_model.fc = nn.Identity()

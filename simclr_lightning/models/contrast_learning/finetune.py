@@ -1,9 +1,8 @@
 from typing import Dict, Optional
 from torch import nn
-from simclr_lightning.models.contrast_learning.base import AbstractBaseModel
+from simclr_lightning.models.contrast_learning.base import AbstractBaseModel, DefaultDecoder
 import torch
-from torchvision.transforms import Resize
-from torchvision.transforms import InterpolationMode
+from .masking import feat_masking
 
 
 class ClassificationHead(nn.Module):
@@ -69,7 +68,7 @@ class BaseFineTune(nn.Module):
         self._simclr_base.projection_head[-1] = nn.Identity()
 
     def remove_decoder(self):
-        self._simclr_base.decoder = nn.Identity()
+        self._simclr_base.decoder = DefaultDecoder()  # nn.Identity()
 
     def __init__(self, simclr_base: AbstractBaseModel,
                  classification_head: ClassificationHead,
@@ -84,23 +83,9 @@ class BaseFineTune(nn.Module):
     def load_base_model_state(self, state_dict: Dict, strict: bool):
         self._simclr_base.load_state_dict(state_dict=state_dict, strict=strict)
 
-    def feat_masking_helper(self, feat: torch.Tensor, feat_mask: torch.Tensor):
-        assert isinstance(feat, torch.Tensor)
-        img_size = feat_mask.shape[-2:]
-        feat_size = feat.shape[-2:]
-        factor = img_size[0] // feat_size[0]
-        shuffled: torch.Tensor = nn.PixelUnshuffle(factor)(feat_mask).to(feat.device)
-        hw_mask = torch.any(shuffled, dim=1, keepdim=True)
-        return hw_mask * feat
-
-    def feat_masking(self, feat_map: torch.Tensor, feat_mask: Optional[torch.Tensor] = None):
-        if feat_mask is None:
-            return feat_map
-        return self.feat_masking_helper(feat=feat_map, feat_mask=feat_mask)
-
     def forward(self, x: torch.Tensor, feat_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         feat_map = self.simclr_base.backbone(x)
-        feat_map = self.feat_masking(feat_map, feat_mask)
+        feat_map = feat_masking(feat_map, feat_mask)
         feat_flattened = self.simclr_base.flattener(feat_map)
         return self.classification_head(feat_flattened)
 
