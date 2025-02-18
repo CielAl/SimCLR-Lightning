@@ -274,7 +274,7 @@ class BaseModelCore(HookedModel):
             # aux. stored in the hook
             return
         if self.add_shortcut:
-            embedding_feat = embedding_feat + self.scaling * self.dec_shortcut(x)
+            embedding_feat = self.dec_shortcut(embedding_feat, x)
         self.decoder(embedding_feat)
 
     def class_path(self, mask: Optional[torch.Tensor]):
