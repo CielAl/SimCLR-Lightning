@@ -5,8 +5,6 @@ import warnings
 import pytorch_lightning as L
 from pytorch_lightning.strategies import Strategy
 from torch.distributed import group as dist_group
-from lightning_fabric.utilities.apply_func import convert_to_tensors
-from lightning_utilities.core.apply_func import apply_to_collection
 import pickle
 # import operator
 
