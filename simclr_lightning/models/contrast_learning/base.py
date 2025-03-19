@@ -118,6 +118,13 @@ class BaseModelCore(HookedModel):
         assert isinstance(module, BaseDecoder)
         return module
 
+    def new_class_head(self, n_outputs: int):
+        return nn.Linear(self.hidden_dim, n_outputs)
+
+    def add_new_classifier(self, n_outputs: int):
+        head = self.new_class_head(n_outputs)
+        self.update_classifier(head)
+
     def __init__(self,
                  augment_view: AugmentationView,
                  backbone: nn.Module,
@@ -277,7 +284,7 @@ class BaseModelCore(HookedModel):
             embedding_feat = self.dec_shortcut(embedding_feat, x)
         self.decoder(embedding_feat)
 
-    def class_path(self, mask: Optional[torch.Tensor]):
+    def class_path(self):
         if not self.reconstruct:
             # use reconstruct path feature
             return
@@ -288,14 +295,14 @@ class BaseModelCore(HookedModel):
         assert feat is not None
         if self.detach_aux_input:
             feat = feat.detach()
-        feat_masked = feat_masking(feat, mask)
-        self.aux_classifier(feat_masked)
+        self.aux_classifier(feat)
 
     def inference(self, x: torch.Tensor, mask: Optional[torch.Tensor]):
         embedding_feat = self.backbone(x)
+        embedding_feat = feat_masking(embedding_feat, mask)
         flattened_feat = self.flattener(embedding_feat)
         self.reconstruct_path(x, embedding_feat)
-        self.class_path(mask)
+        self.class_path()
         return flattened_feat
 
     def output_prediction(self, feat: torch.Tensor):
