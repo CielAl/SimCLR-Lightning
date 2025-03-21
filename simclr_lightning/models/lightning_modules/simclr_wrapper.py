@@ -180,7 +180,7 @@ class SimCLRLightning(BaseLightningModule):
         # recon_batch_size = batch['data'].shape[0]  # // self.n_views
 
         # already augmented beforehand
-        logits = self(masked_images, augment=False, mask=batch['mask'])  # self(images)
+        logits = self(masked_images, augment=False, mask=None)  # self(images)
         # contrastive learning
         loss_contrast, (logits, labels) = self.contrast_loss(logits)
         is_valid_class_loss = isinstance(logits, torch.Tensor) and isinstance(labels, torch.Tensor)
