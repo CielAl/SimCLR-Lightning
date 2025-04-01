@@ -284,7 +284,7 @@ class BaseModelCore(HookedModel):
             embedding_feat = self.dec_shortcut(embedding_feat, x)
         self.decoder(embedding_feat)
 
-    def class_path(self):
+    def class_path(self, mask: Optional[torch.Tensor]):
         if not self.reconstruct:
             # use reconstruct path feature
             return
@@ -292,6 +292,7 @@ class BaseModelCore(HookedModel):
             return
         # todo? where does this happen
         feat = self.decoder.mid_out
+        feat = feat_masking(feat, mask)
         assert feat is not None
         if self.detach_aux_input:
             feat = feat.detach()
@@ -299,10 +300,10 @@ class BaseModelCore(HookedModel):
 
     def inference(self, x: torch.Tensor, mask: Optional[torch.Tensor]):
         embedding_feat = self.backbone(x)
-        embedding_feat = feat_masking(embedding_feat, mask)
+        # embedding_feat = feat_masking(embedding_feat, mask)
         flattened_feat = self.flattener(embedding_feat)
         self.reconstruct_path(x, embedding_feat)
-        self.class_path()
+        self.class_path(mask)
         return flattened_feat
 
     def output_prediction(self, feat: torch.Tensor):
