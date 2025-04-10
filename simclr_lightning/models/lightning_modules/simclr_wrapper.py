@@ -3,6 +3,7 @@ import torch
 import torchmetrics
 from torchvision import transforms as tvtf
 from simclr_lightning.models.contrast_learning.loss import ContrastLoss, ReConstLoss
+from simclr_lightning.models.contrast_learning.transforms import AugmentationView
 
 from simclr_lightning.models.lightning_modules.base import PHASE_STR, BaseLightningModule, feature_norm_penalty
 from simclr_lightning.models.contrast_learning.base import AbstractBaseModel
@@ -77,6 +78,7 @@ class SimCLRLightning(BaseLightningModule):
                  norm_penalty: bool = False,
                  norm_target: float = 1000,
                  norm_lambda: float = 1e-3,
+                 debug: bool = False,
                  ):
         """Wrapper of LightningModule for SimCLR training.
 
@@ -94,10 +96,11 @@ class SimCLRLightning(BaseLightningModule):
             prog_bar: whether to log results in progress bar
             next_line: whether to print a new line after each validation epoch. This enables the default tqdm progress
                 bar to retain the results of previous epochs in previous lines.
+            debug: whether enter debug mode for certain downstream callbacks
         """
         optim_func = _get_optim(optim_name)
         super(SimCLRLightning, self).__init__(batch_size, lr, max_t, prog_bar, next_line,
-                                              optim_func=optim_func)
+                                              optim_func=optim_func, debug=debug)
 
         # params
         self.temperature = temperature
@@ -162,6 +165,18 @@ class SimCLRLightning(BaseLightningModule):
         self.enc_penalty_meter.get_metric(phase_name).update(norm_loss)
         return norm_loss
 
+    def compute_contrastive(self, augment_view: AugmentationView, images: torch.Tensor):
+        # explicitly do augmentation outside, and use masking upon augmentation output as the model input
+        augment_images = augment_view(images).clamp(0, 1)
+        masked_images = self.random_erasing(augment_images)
+        # recon_batch_size = batch['data'].shape[0]  # // self.n_views
+
+        # already augmented beforehand
+        logits = self(masked_images, augment=False, mask=None)  # self(images)
+        # contrastive learning
+        loss_contrast, (logits, labels) = self.contrast_loss(logits)
+        return loss_contrast, (logits, labels)
+
     def _step_get_output(self, batch: ModelInput, phase_name: PHASE_STR):
         """Step helper shared by training and validation steps which computes the logits
 
@@ -175,14 +190,15 @@ class SimCLRLightning(BaseLightningModule):
         images = batch['data'][:, :self.image_channels, ...]
         # explicitly do augmentation outside, and use masking upon augmentation output as the model input
 
-        augment_images = self.model.augment_view(images).clamp(0, 1)
-        masked_images = self.random_erasing(augment_images)
-        # recon_batch_size = batch['data'].shape[0]  # // self.n_views
-
-        # already augmented beforehand
-        logits = self(masked_images, augment=False, mask=None)  # self(images)
-        # contrastive learning
-        loss_contrast, (logits, labels) = self.contrast_loss(logits)
+        # augment_images = self.model.augment_view(images).clamp(0, 1)
+        # masked_images = self.random_erasing(augment_images)
+        # # recon_batch_size = batch['data'].shape[0]  # // self.n_views
+        #
+        # # already augmented beforehand
+        # logits = self(masked_images, augment=False, mask=None)  # self(images)
+        # # contrastive learning
+        # loss_contrast, (logits, labels) = self.contrast_loss(logits)
+        loss_contrast, (logits, labels) = self.compute_contrastive(self.model.augment_view, images)
         is_valid_class_loss = isinstance(logits, torch.Tensor) and isinstance(labels, torch.Tensor)
         if is_valid_class_loss and self.contrast_loss.weight != 0:
             self.accuracy[phase_name].update(logits, labels)

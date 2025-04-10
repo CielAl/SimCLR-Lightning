@@ -43,7 +43,11 @@ class BaseDecoder(HookedModel):
 
     @property
     def mid_out(self):
-        return self._mid_dec_hook.stored
+        return self.mid_hook.stored
+
+    @property
+    def mid_hook(self):
+        return self._mid_dec_hook
 
 
 class DefaultDecoder(BaseDecoder):
@@ -301,8 +305,9 @@ class BaseModelCore(HookedModel):
     def inference(self, x: torch.Tensor, mask: Optional[torch.Tensor]):
         embedding_feat = self.backbone(x)
         # embedding_feat = feat_masking(embedding_feat, mask)
-        flattened_feat = self.flattener(embedding_feat)
-        self.reconstruct_path(x, embedding_feat)
+        # embedding_feat.retain_grad()
+        flattened_feat = self.flattener(self.enc_out)  # embedding_feat
+        self.reconstruct_path(x, self.enc_out)  # embedding_feat
         self.class_path(mask)
         return flattened_feat
 

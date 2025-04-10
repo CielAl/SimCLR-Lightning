@@ -1,6 +1,6 @@
 import pytorch_lightning as L
 import torchmetrics
-from typing import Literal, Callable
+from typing import Literal, Callable, Optional
 from abc import abstractmethod
 import torch
 import numpy as np
@@ -30,6 +30,7 @@ class BaseLightningModule(L.LightningModule):
     next_line: bool
     max_t: int
     optim_func: Callable
+    log_grad: bool
 
     def param_groups(self, module: torch.nn.Module, weight_decay: float):
         """Set up the optimizer and lr scheduler - adapted from https://theaisummer.com/simclr/
@@ -96,6 +97,7 @@ class BaseLightningModule(L.LightningModule):
 
     def __init__(self, batch_size: int, lr: float, max_t: int, prog_bar: bool, next_line: bool,
                  optim_func: Callable = torch.optim.Adam,
+                 debug: bool = False
                  ):
         """
 
@@ -114,6 +116,7 @@ class BaseLightningModule(L.LightningModule):
         self.next_line = next_line
         self.max_t = max_t
         self.optim_func = optim_func
+        self.log_grad = debug
 
     def reset_meter_phase(self, *args, **kwargs):
         """reset all torchmetrics meters
@@ -138,3 +141,11 @@ class BaseLightningModule(L.LightningModule):
 
     def reset_meter_all(self):
         raise NotImplementedError
+
+    def retain_tensor_grad(self, tensor: Optional[torch.Tensor]):
+        if tensor is None:
+            return
+        tensor.retain_grad()
+
+    def hooks_retain_grad(self):
+        ...
